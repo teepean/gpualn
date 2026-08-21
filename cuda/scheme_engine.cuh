@@ -64,7 +64,9 @@ __device__ inline int d_scheme_search(const fmidx_dev fm, const uint8_t *seq, in
 {
 	const unsigned FULL = 0xffffffffu;
 	int lane = threadIdx.x & 31;
-	const SchemeTab &T = c_sch[K];
+	/* K=3 short reads may use the P=4 table: cost scales with part length = len/P (Phase 29),
+	 * and fewer parts means longer, more selective parts. */
+	const SchemeTab &T = c_sch[(K == 3 && len <= c_k3alt_maxlen) ? SCH_K3ALT : K];
 	int P = T.P;
 	unsigned long long nn = *nn_io;
 
@@ -232,7 +234,9 @@ __device__ inline int d_scheme_has_hit(const fmidx_dev fm, const uint8_t *seq, i
 	for (int j = 0; j < len; ++j) if (seq[j] > 3) ++nN;
 	if (nN > K) { if (lane==0) *nn_out = 0; return 0; }
 
-	const SchemeTab &T = c_sch[K];
+	/* K=3 short reads may use the P=4 table: cost scales with part length = len/P (Phase 29),
+	 * and fewer parts means longer, more selective parts. */
+	const SchemeTab &T = c_sch[(K == 3 && len <= c_k3alt_maxlen) ? SCH_K3ALT : K];
 	int pb[SCH_MAXP + 1];
 	for (int t = 0; t <= T.P; ++t) pb[t] = (int)(((long long)len * t) / T.P);
 

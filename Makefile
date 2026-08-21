@@ -49,6 +49,9 @@ bwamem-lite:libbwa.a example.o
 # ---- CUDA port (Phase 1: device FM-index validation) ----
 NVCC?=		nvcc
 CUDA_ARCH?=	sm_86
+# every device header, so editing a scheme table actually triggers a rebuild. Leaving
+# schemes.cuh/scheme_engine.cuh out of these lists silently measures a stale binary.
+CUHDRS=		cuda/fm_device.cuh cuda/dfs_engine.cuh cuda/scheme_engine.cuh cuda/schemes.cuh cuda/dual_engine.cuh
 NVCCFLAGS?=	-O3 -std=c++14 -arch=$(CUDA_ARCH) -lineinfo
 # ptxas Advanced Control File found by CompileIQ (cuda/tune_compileiq.py). Tuned on the scheme
 # engine over a production-representative sub100k (10.3% fallback); measured 1.12x on k_dfs_scheme
@@ -56,26 +59,26 @@ NVCCFLAGS?=	-O3 -std=c++14 -arch=$(CUDA_ARCH) -lineinfo
 ACF?=		cuda/gpualn_scheme.acf
 ACFFLAG=	$(if $(ACF),-Xptxas=--apply-controls=$(ACF),)
 
-fmtest:libbwa.a cuda/fmtest.cu cuda/fm_device.cuh
+fmtest:libbwa.a cuda/fmtest.cu $(CUHDRS)
 		$(NVCC) $(NVCCFLAGS) -I. cuda/fmtest.cu -o $@ -L. -lbwa $(LIBS)
 
 # dfstest also needs the CPU aln objects (real bwt_match_gap / bwt_cal_width / read I/O)
 DFSDEPS=	bwtgap.o bwtaln.o bwaseqio.o bamlite.o
-dfstest:libbwa.a $(DFSDEPS) cuda/dfstest.cu cuda/fm_device.cuh
+dfstest:libbwa.a $(DFSDEPS) cuda/dfstest.cu $(CUHDRS)
 		$(NVCC) $(NVCCFLAGS) -I. cuda/dfstest.cu $(DFSDEPS) -o $@ -L. -lbwa $(LIBS)
 
 ALNDEPS=	$(DFSDEPS) bwase.o
 # standalone GPU tool (its own main via -DALN_GPU_MAIN)
-bwa-aln-gpu:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh $(ACF)
+bwa-aln-gpu:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu $(CUHDRS) $(ACF)
 		$(NVCC) $(NVCCFLAGS) $(ACFFLAG) -DALN_GPU_MAIN -I. cuda/aln_gpu.cu $(ALNDEPS) -o $@ -L. -lbwa $(LIBS)
 
 # instrumented twin: FM-probe accounting + (depth,errors) node-pop profile under GPUALN_HISTO=1.
 # Separate binary so production codegen (register count!) is untouched.
-bwa-aln-gpu-instr:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh
+bwa-aln-gpu-instr:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu $(CUHDRS)
 		$(NVCC) $(NVCCFLAGS) -DALN_GPU_MAIN -DDFS_INSTRUMENT -I. cuda/aln_gpu.cu $(ALNDEPS) -o $@ -L. -lbwa $(LIBS)
 
 # CUDA-enabled bwa with the `gpualn` subcommand (default `make` stays CPU-only / CUDA-free)
-aln_gpu.o:cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh $(ACF)
+aln_gpu.o:cuda/aln_gpu.cu $(CUHDRS) $(ACF)
 		$(NVCC) $(NVCCFLAGS) $(ACFFLAG) -I. -c cuda/aln_gpu.cu -o $@
 main_cuda.o:main.c
 		$(CC) -c $(CFLAGS) $(DFLAGS) -DHAVE_CUDA $(INCLUDES) main.c -o $@
@@ -140,5 +143,5 @@ rope.o: rle.h rope.h
 utils.o: utils.h ksort.h malloc_wrap.h kseq.h
 
 # Idea-A cost probe: bidirectional staircase search, node-pop counts by anchor position
-bidir_cost:libbwa.a cuda/bidir_cost.cu cuda/fm_device.cuh
+bidir_cost:libbwa.a cuda/bidir_cost.cu $(CUHDRS)
 		$(NVCC) $(NVCCFLAGS) -I. cuda/bidir_cost.cu -o $@ -L. -lbwa $(LIBS)

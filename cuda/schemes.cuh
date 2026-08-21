@@ -40,9 +40,14 @@
 
 #include <stdint.h>
 
-#define SCH_MAXK 4
+#define SCH_MAXK 4    /* largest K with a validated table; K>SCH_MAXK falls back to exact DFS */
+#define SCH_NSLOT 6   /* c_sch entries: 0..SCH_MAXK plus SCH_K3ALT. NOT a K bound -- keeping these
+                       * separate is load-bearing: raising SCH_MAXK to make room for an alternative
+                       * table stops K=5 reads falling back and silently runs them on a K=3 scheme,
+                       * i.e. false negatives. */
 #define SCH_MAXP 8
 #define SCH_MAXS 8
+#define SCH_K3ALT 5   /* c_sch slot for the alternative K=3, P=4 table */
 
 struct SchemeTab {
 	int P, ns;                                   /* parts, number of searches */
@@ -52,38 +57,51 @@ struct SchemeTab {
 };
 
 #ifdef FM_DEVICE_DEFINE_CONST
-__constant__ SchemeTab c_sch[SCH_MAXK + 1];
+__constant__ SchemeTab c_sch[SCH_NSLOT];
+__constant__ int c_k3alt_maxlen;      /* K=3 reads at or below this length use the P=4 table */
 #else
-extern __constant__ SchemeTab c_sch[SCH_MAXK + 1];
+extern __constant__ SchemeTab c_sch[SCH_NSLOT];
+extern __constant__ int c_k3alt_maxlen;
 #endif
 
 /* ---- host-side table definition + validation ----
  * NOT guarded by __CUDA_ARCH__: nvcc parses host function bodies during the DEVICE pass too, so
  * hiding these there makes every host call site fail to compile. */
 #include <cstdio>
+#include <cstdlib>
+#define SCH_MAXLEN_HOST 127
 #include <cstring>
 #include <vector>
 
-struct SchRaw { int K, P, ns; const char *pi[SCH_MAXS]; const char *L[SCH_MAXS]; const char *U[SCH_MAXS]; };
+/* `slot` is where the table lands in c_sch[]; it differs from K only for alternative tables that
+ * cover the same K with a different part count (see the K=3 P=4 entry). */
+struct SchRaw { int K, P, ns; const char *pi[SCH_MAXS]; const char *L[SCH_MAXS]; const char *U[SCH_MAXS]; int slot; };
 
 /* strings are 0-based part indices, one char per part */
 static const SchRaw SCH_RAW[] = {
 	/* K=1, p=2, 2 searches -- Kianfar */
 	{1,2,2, {"01","10"},
 	        {"00","00"},
-	        {"01","01"}},
+	        {"01","01"}, 1},
 	/* K=2, p=3, 3 searches -- Kianfar */
 	{2,3,3, {"012","210","120"},
 	        {"002","000","011"},
-	        {"012","022","012"}},
+	        {"012","022","012"}, 2},
 	/* K=3, p=5, 4 searches -- SeqAn3 optimum_search_scheme<0,3> */
 	{3,5,4, {"43210","23410","12340","01234"},
 	        {"00000","00111","00022","00003"},
-	        {"00333","01123","01223","02233"}},
+	        {"00333","01123","01223","02233"}, 3},
+	/* K=3, p=4, 4 searches -- derived here by weighted greedy set cover over the (pi,L,U) space
+	 * (cuda/tools/find_scheme.py), validated exhaustively at startup like every other table.
+	 * Motive: cost is driven by part length = len/P (Phase 29), and P=K+1 is the fewest parts a
+	 * covering scheme can use. Selected per read by length, see sch_pick_k3(). */
+	{3,4,4, {"0123","3210","1023","2103"},
+	        {"0000","0000","0000","0000"},
+	        {"0223","0233","0233","0123"}, SCH_K3ALT},
 	/* K=4, p=5, 5 searches -- Renders et al. multiple_opt/4 scheme1 */
 	{4,5,5, {"01234","12034","21034","34210","43210"},
 	        {"00222","00000","01111","00003","01114"},
-	        {"02244","01244","01244","01444","01444"}},
+	        {"02244","01244","01244","01444","01444"}, 4},
 };
 
 /* Exhaustive covering + contiguity check. Returns 0 on success. Run at startup: a non-covering
@@ -135,12 +153,12 @@ static int sch_validate(const SchRaw *r)
 /* build the device tables; returns 0 on success */
 static int sch_upload(int verbose)
 {
-	SchemeTab h[SCH_MAXK + 1];
+	SchemeTab h[SCH_NSLOT];
 	memset(h, 0, sizeof h);
 	for (unsigned i = 0; i < sizeof(SCH_RAW)/sizeof(SCH_RAW[0]); ++i) {
 		const SchRaw *r = &SCH_RAW[i];
 		if (sch_validate(r)) return 1;
-		SchemeTab &t = h[r->K];
+		SchemeTab &t = h[r->slot];
 		t.P = r->P; t.ns = r->ns;
 		for (int s = 0; s < r->ns; ++s)
 			for (int j = 0; j < r->P; ++j) {
@@ -148,9 +166,16 @@ static int sch_upload(int verbose)
 				t.L [s][j] = (uint8_t)(r->L [s][j] - '0');
 				t.U [s][j] = (uint8_t)(r->U [s][j] - '0');
 			}
-		if (verbose) fprintf(stderr, "[scheme] K=%d: p=%d, %d searches, covering verified\n", r->K, r->P, r->ns);
+		if (verbose) fprintf(stderr, "[scheme] K=%d: p=%d, %d searches, covering verified%s\n",
+		                     r->K, r->P, r->ns, r->slot == SCH_K3ALT ? " (alt, short reads)" : "");
 	}
 	if (cudaMemcpyToSymbol(c_sch, h, sizeof h) != cudaSuccess) return 1;
+	/* 0 disables the alternative table entirely; -1 (default) means "every K=3 read". */
+	int k3alt = getenv("GPUALN_K3ALT") ? atoi(getenv("GPUALN_K3ALT")) : 0;
+	if (k3alt < 0) k3alt = SCH_MAXLEN_HOST;
+	if (verbose) fprintf(stderr, "[scheme] K=3 P=4 alt table: %s\n",
+	                     k3alt ? (k3alt >= SCH_MAXLEN_HOST ? "all K=3 reads" : "short K=3 reads") : "off");
+	if (cudaMemcpyToSymbol(c_k3alt_maxlen, &k3alt, sizeof k3alt) != cudaSuccess) return 1;
 	return 0;
 }
 

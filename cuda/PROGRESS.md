@@ -1707,3 +1707,68 @@ Three mechanism claims in a row turned out wrong -- the ACF's register drop buyi
 wrong, and each time the explanation was adopted from a correlation without an isolating test. The
 lesson is cheap to state and evidently expensive to learn: a knob that changes two things at once
 explains nothing until one of them is pinned.
+
+## Phase 29 — where the work is, and a refuted attempt to cut it
+
+With every hardware lever measured and exhausted (Phases 25-28), the only remaining direction is
+doing less work. Node-pops by error budget, scheme engine, sub100k:
+
+| d | reads | %reads | pops | %pops | pops/read |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 44,751 | 44.8% | 427.5 M | **54.3%** | 9,552 |
+| 4 | 44,952 | 45.0% | 166.2 M | 21.1% | 3,696 |
+| 5 | 9,963 | 10.0% | 189.8 M | **24.1%** | 19,055 |
+| 6 | 334 | 0.3% | 4.4 M | 0.6% | 13,048 |
+
+**d=3 costs 2.6x more per read than d=4**, despite allowing fewer errors, because d=3 reads are the
+SHORT ones. Parts are uniform (`pb[t] = len*t/P`, scheme_engine.cuh:237), so part length is `len/P`,
+and cost steps exactly at each part-length boundary:
+
+| part length | reads | pops/read |
+| --- | --- | --- |
+| 6 bp (len 30-34) | 22,160 | 15,294 -> 10,321 |
+| 7 bp (len 35-39) | 15,832 | 7,844 -> 6,748 |
+| 8 bp (len 40-41) | 6,759 | 4,977 -> 4,872 |
+
+Each extra base of part length is worth ~25%. An exact 6-mer occurs ~1.5 M times in the doubled
+6.2 Gbp index; an exact 8-mer ~95 k times.
+
+### REFUTED: fewer parts for short reads (K=3, P=4)
+
+If cost scales with part length, use the fewest parts a covering scheme allows -- `P = K+1 = 4`,
+giving 25% longer parts. A weighted greedy set cover over the whole (pi, L, U) space
+(`cuda/tools/find_scheme.py`) produced a covering P=4 table, and a Kucherov-style cost proxy scored
+it **6.8x cheaper** than the P=5 SeqAn3 table at len 32.
+
+Measured, it is **46% WORSE**: d=3 pops 427.5 M -> 622.8 M. `.sai` unchanged (`eecf35c1`) either way.
+
+The proxy counted seed selectivity and missed what actually dominates: the *shape* of the U
+schedule. SeqAn3's P=5 table is `U="00333"` -- the first three parts are pinned at zero errors, so
+the search stays narrow deep into the read. A P=4 table cannot do that: with only 4 parts, the
+budget has to open up immediately after the exact part (`U="0223"`), and the resulting explosion
+costs far more than the longer seed saves. The file header already said this about Kianfar vs
+Renders at K=4 (2.1-2.7x vs 14.7-16.6x); it is the same effect, and the proxy failed to capture it.
+
+Kept as an opt-in for reproducibility: `GPUALN_K3ALT=-1` selects the P=4 table, default off. It also
+leaves the multi-table plumbing in place, which is what a K=5 attempt would need.
+
+### Bug found on the way: stale-header builds
+
+The Makefile's CUDA targets depended only on `fm_device.cuh` and `dfs_engine.cuh`. Editing
+`schemes.cuh` or `scheme_engine.cuh` therefore did NOT trigger a rebuild, and two measurements in
+this phase were taken against a stale binary that still had a known-wrong `SCH_MAXK`. All device
+headers are now in `CUHDRS` and every CUDA target depends on it.
+
+The wrong binary was itself instructive: raising `SCH_MAXK` from 4 to 5 to make room for the
+alternative table stops K=5 reads falling back to the exact engine and silently runs them on a K=3
+scheme -- a false-negative generator that the md5 gate did not catch on this dataset. `SCH_MAXK`
+(largest K with a validated table) and `SCH_NSLOT` (c_sch array size) are now separate, with a
+comment saying why.
+
+### Still the best target
+
+The d=5 band: 24.1% of all node-pops from 10.0% of reads, at 19,055 pops/read, because those reads
+have no scheme table and fall back to the exact engine. A covering K=5 table would attack it, and
+correctness does not depend on the cost model -- `sch_validate()` verifies covering exhaustively at
+startup, so a mediocre scheme is safe, merely possibly slower than the fallback it replaces. Note a
+K=6 scheme also covers K=5, so Columba's even-k family is usable if a K=5 table cannot be found.
