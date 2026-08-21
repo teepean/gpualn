@@ -99,7 +99,7 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 {
 	gap_opt_t *opt = gap_init_opt();
 	opt->seed_len = 1024; opt->fnr = 0.01; opt->max_diff = -1; opt->max_gapo = 2; opt->n_threads = 16;
-	const char *out_fn = NULL; int wpb = 4, CAP_SM = 512, CAP_GL = 16384;
+	const char *out_fn = NULL; int wpb = 0, CAP_SM = 0, CAP_GL = 16384;   /* 0 = per-engine default */
 	int sam_mode = 0, n_occ = 3; char *rg_line = NULL;   /* -S: fused alnse (SAM out); -r: RG */
 	int c, use_scheme = 1;   /* search-scheme engine is the default; -x exact selects the legacy DFS */
 	while ((c = getopt(argc, argv, "l:n:o:t:f:Sr:x:")) >= 0) {
@@ -131,6 +131,15 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 		return 1;
 	}
 	const char *prefix = argv[optind], *fq = argv[optind+1];
+	/* Per-engine shared-stack geometry. ncu says occupancy is NOT the lever here: DRAM sits at
+	 * 0.65% of peak and the top stall is a SHARED-memory dependency, not global latency. A deeper
+	 * per-warp stack spills less to the global backing and wins even though it cuts resident warps
+	 * from 8/SM to 2/SM -- scheme engine 1.26x on sub100k, 1.31x on strided20k, .sai unchanged.
+	 * The exact engine does 5.4x more node-pops per read (40,924 vs 7,644 on sub100k) and DOES
+	 * starve at 2 warps/SM there (1.53s -> 4.07s, 2.68 -> 1.01 G-pops/s), so it keeps the old
+	 * shallow-but-wide geometry. DFS_WARP_CAP / DFS_WARP_WPB still override both. */
+	if (CAP_SM == 0) CAP_SM = use_scheme ? 1280 : 512;
+	if (wpb == 0)    wpb    = use_scheme ? 2 : 4;
 	if (getenv("DFS_WARP_CAP")) CAP_SM = atoi(getenv("DFS_WARP_CAP"));
 	if (getenv("DFS_WARP_GCAP")) CAP_GL = atoi(getenv("DFS_WARP_GCAP"));
 	if (getenv("DFS_WARP_WPB")) wpb = atoi(getenv("DFS_WARP_WPB"));   /* warps per block (occupancy sweep) */

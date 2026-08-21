@@ -1495,9 +1495,11 @@ First tuning run under the Phase 23 rules (`--engine scheme`, production-represe
 
 The two run distributions do not overlap (base 1.438-1.482, ACF 1.286-1.306), so this is not drift.
 
-**Mechanism**: `k_dfs_scheme` drops REG:95 -> REG:86 at the same STACK:40. Nine registers is the
-difference between occupancy tiers here, which is the resource that has governed this kernel since
-Phase 6.
+**Mechanism**: `k_dfs_scheme` drops REG:95 -> REG:86 at the same STACK:40. ~~Nine registers is the
+difference between occupancy tiers here.~~ **Wrong -- corrected in Phase 25.** ncu shows
+`Block Limit Registers = 5` against `Block Limit Shared Mem = 2`, so registers were never the
+binding limiter and the register drop cannot have changed occupancy. The 1.12x must come from the
+instruction schedule itself. The speedup is real and re-measured; only the explanation was wrong.
 
 **The Phase 14 claim that ACFs never transfer needs qualifying.** This one helps BOTH kernels, even
 though it raises `k_dfs_warp2` from REG:80 to REG:88. A plausible reason is exactly the Phase 23
@@ -1508,3 +1510,77 @@ not proven -- one data point, and the register counts moved in opposite directio
 Wired into the Makefile as `ACF?=cuda/gpualn_scheme.acf`, applied to `aln_gpu.o` and `bwa-aln-gpu`.
 Build with `make ACF=` to disable. Golden gates re-validated through the real build: sub2k
 `4b068014`, sub10k `54410c75`, sub100k `eecf35c1`.
+
+## Phase 25 — ncu kills the cp.async idea and finds a 1.26x in the shared-stack geometry
+
+Profiled `k_dfs_scheme` to decide whether a `cp.async` prefetch was worth building
+(`--replay-mode application` is mandatory; `sudo` is needed for the counters, and
+`fs.protected_regular=1` makes root fail to reopen a `.sai` owned by the user inside sticky /tmp).
+
+| metric | value |
+| --- | --- |
+| DRAM throughput | **0.65% of peak** (5.91 GB/s) |
+| Compute (SM) throughput | 0.72% |
+| L1/TEX hit rate | 77.49% |
+| L2 hit rate | 20.62% |
+| Theoretical occupancy | 16.67% (8 of 48 warps) |
+| Achieved occupancy | 9.22% (4.42 warps/SM) |
+| Block limit: shared mem / registers / warps | **2** / 5 / 12 |
+| Top stall | short scoreboard (**shared**-memory dependency), 34.3% of 7.0 cycles |
+| Avg active threads per warp | 12.14 of 32 |
+
+### `cp.async` prefetch: REFUTED before implementation
+
+Three independent reasons, any one sufficient:
+1. **Nothing to prefetch away.** DRAM at 0.65% of peak. There is no bandwidth ceiling and no queue
+   pressure; prefetching only moves transactions earlier, and there is no "earlier" worth having.
+2. **The gathers already hit cache.** L1/TEX hit rate 77.5%. The DFS revisits nearby SA intervals,
+   so the working set is nothing like the 3.1 GB index. Staging into shared memory would compete
+   with an L1 that is already winning.
+3. **It attacks the wrong stall with the scarcest resource.** The top stall is a *shared*-memory
+   dependency, not global latency -- and shared memory is the binding occupancy limiter (2 blocks
+   vs 5 allowed by registers). Spending shared memory on a staging buffer makes the actual
+   constraint worse to fix a non-problem.
+
+This also explains the three failed MLP attempts (NPL=2, dual 20 B, dual 12 B): they all added
+per-lane memory parallelism to a kernel that was never short of memory parallelism.
+
+### What the profile DID find: the shared stack is too shallow
+
+Shared memory per block is `wpb * CAP_SM * sizeof(SNode)`, so warps/SM is governed by `CAP_SM`
+alone. Sweeping it (`DFS_WARP_CAP` / `DFS_WARP_WPB`, sub100k, scheme engine, best of 2-3):
+
+| CAP_SM | wpb | KB/blk | warps/SM | kernel |
+| --- | --- | --- | --- | --- |
+| 256 | 4 | 24 | 16 | 1.689 s |
+| 384 | 4 | 36 | 11 | 1.478 s |
+| **512** | **4** | **48** | **8** | **1.240 s** (old default) |
+| 1024 | 4 | 96 | 4 | 1.036 s |
+| **1280** | **2** | **60** | **2** | **0.975 s** (new default) |
+| 1792 | 1 | 42 | 3 | 0.988 s |
+| 2048 | 1 | 48 | 2 | 0.997 s |
+| 2560 | 1 | 60 | 1 | 1.628 s (cliff: 1 warp/SM) |
+| 4096 | 1 | 96 | 1 | 1.650 s |
+
+Occupancy runs the WRONG WAY over most of that range. Halving resident warps from 8 to 2 is 1.27x
+faster; the cliff only arrives at 1 warp/SM. Node-pops barely move (764 M -> 788 M), so this is not
+less work -- it is the same work at 0.61 -> 0.79 G-pops/s, because a deeper stack spills less to the
+global backing. The Phase 6 intuition that occupancy governs this kernel is false at the current
+design point.
+
+### Per-engine defaults, because the two engines want opposite geometries
+
+The exact engine does **5.4x more node-pops per read** (40,924 vs 7,644 on sub100k) and genuinely
+does starve at 2 warps/SM there: 1.53 s -> 4.07 s, 2.68 -> 1.01 G-pops/s. On strided20k it prefers
+the deep stack like the scheme engine (1.302 -> 0.993 s), so the regression is workload-specific,
+not universal -- which is exactly why it keeps the conservative geometry rather than the average.
+
+Shipped: `CAP_SM = use_scheme ? 1280 : 512`, `wpb = use_scheme ? 2 : 4`; `DFS_WARP_CAP` /
+`DFS_WARP_WPB` still override. Kernel with the shipped defaults + ACF: sub10k **0.851 s**,
+sub100k **0.981 s**, strided20k **0.909 s**. All goldens byte-identical on both engines:
+`4b068014` / `54410c75` / `eecf35c1`.
+
+### Still open
+
+`Avg active threads per warp = 12.14 of 32` -- 62% of lanes idle, because the frontier usually holds
+fewer than 32 nodes. That is now the largest single inefficiency in the kernel and it is untouched.
