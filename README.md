@@ -19,7 +19,7 @@ Two engines, both bit-exact at the output level:
 - **Exact engine** — a per-read iterative DFS over the same node set bwa's best-first queue visits
   when the `max_entries` cap is never reached (measured: it never is, on aDNA data). It answers only
   the question "does this read have any hit?", which is the cheap half of the work.
-- **Search-scheme engine** (`GPUALN_SCHEME=1`) — a **bidirectional** FM-index search using optimal
+- **Search-scheme engine** (default) — a **bidirectional** FM-index search using optimal
   search schemes (Kianfar for K≤2, SeqAn3 for K=3, Renders et al. for K=4). The bidirectional index
   is free here: gpualn searches `S = T · revcomp(T)`, so `revcomp(S) = S` and one index serves both
   directions. Up to **20x** the exact engine's kernel time on short-read sets.
@@ -47,14 +47,16 @@ make CUDA_ARCH=sm_90 # target another architecture
 ## Use
 
 ```sh
-./gpualn index ref.fa                                   # same index as upstream bwa
-GPUALN_SCHEME=1 ./gpualn aln-gpu -l 1024 -n 0.01 -o 2 \
-    -t 16 ref.fa reads.fq > out.sai
+./gpualn index ref.fa                                    # same index as upstream bwa
+./gpualn aln-gpu -l 1024 -n 0.01 -o 2 -t 16 \
+    ref.fa reads.fq > out.sai
 ./gpualn samse ref.fa out.sai reads.fq > out.sam
 ```
 
-`aln-gpu` takes the same options as `bwa aln` and is a drop-in replacement for it. `gpualn` is
-accepted as an alias for the subcommand so existing scripts keep working. `-t` sets the number of
+`aln-gpu` takes the same options as `bwa aln` and is a drop-in replacement for it. `-x` picks the
+engine — `scheme` (default) or `exact`, the legacy per-read DFS kept for A/B measurement; the `.sai`
+is bit-exact either way. `gpualn` is accepted as an alias for the subcommand so existing scripts
+keep working. `-t` sets the number of
 CPU threads used for the reconcile step, which is the bottleneck once the kernel is fast — give it
 every core you have.
 
@@ -62,16 +64,18 @@ every core you have.
 
 | Variable | Effect |
 | --- | --- |
-| `GPUALN_SCHEME=1` | use the search-scheme engine (opt-in; validated, not yet default) |
 | `GPUALN_HISTO=1` | print per-stage timings, kernel seconds and hit histograms to stderr |
 | `GPUALN_NOORDER=1` | disable longest-first read ordering (for A/B measurement) |
 | `GPUALN_BATCH=n` | reads per batched CPU reconcile call (default 8) |
+
+`GPUALN_SCHEME` is obsolete — the engine it selected is now the default. Setting it prints a notice
+and changes nothing.
 
 ## Measured results
 
 Reference hs37d5, RTX 3090 + 16 CPU threads, all outputs byte-identical to CPU `bwa aln`:
 
-| read set | reads | exact engine | scheme engine |
+| read set | reads | `-x exact` | `-x scheme` (default) |
 | --- | --- | --- | --- |
 | 2730 short (30–63 bp) | 671,652 | 22.2 s | **1.1 s** (20.2x) |
 | end-to-end `aln` incl. CPU reconcile | 671,652 | 24.3 s | **4.6 s** (5.3x) |

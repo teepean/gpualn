@@ -101,8 +101,8 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 	opt->seed_len = 1024; opt->fnr = 0.01; opt->max_diff = -1; opt->max_gapo = 2; opt->n_threads = 16;
 	const char *out_fn = NULL; int wpb = 4, CAP_SM = 512, CAP_GL = 16384;
 	int sam_mode = 0, n_occ = 3; char *rg_line = NULL;   /* -S: fused alnse (SAM out); -r: RG */
-	int c;
-	while ((c = getopt(argc, argv, "l:n:o:t:f:Sr:")) >= 0) {
+	int c, use_scheme = 1;   /* search-scheme engine is the default; -x exact selects the legacy DFS */
+	while ((c = getopt(argc, argv, "l:n:o:t:f:Sr:x:")) >= 0) {
 		if (c=='l') opt->seed_len = atoi(optarg);
 		else if (c=='n') { if (strstr(optarg,".")) { opt->fnr=atof(optarg); opt->max_diff=-1; } else { opt->max_diff=atoi(optarg); opt->fnr=-1; } }
 		else if (c=='o') opt->max_gapo = atoi(optarg);
@@ -110,8 +110,26 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 		else if (c=='f') out_fn = optarg;
 		else if (c=='S') sam_mode = 1;
 		else if (c=='r') { if ((rg_line = bwa_set_rg(optarg)) == 0) return 1; }
+		else if (c=='x') {
+			if (strcmp(optarg, "scheme") == 0) use_scheme = 1;
+			else if (strcmp(optarg, "exact") == 0) use_scheme = 0;
+			else { fprintf(stderr, "[aln-gpu] -x: unknown engine '%s' (want `scheme' or `exact')\n", optarg); return 1; }
+		}
 	}
-	if (optind + 2 > argc) { fprintf(stderr, "usage: %s [-l N -n F -o N -t N -f out.sai] <ref.fa> <in.fq>\n", argv[0]); return 1; }
+	if (optind + 2 > argc) {
+		fprintf(stderr, "\nUsage: %s [options] <ref.fa> <in.fq>\n\n", argv[0]);
+		fprintf(stderr, "Options: -l INT   seed length [%d]\n", opt->seed_len);
+		fprintf(stderr, "         -n NUM   max #diff (INT) or missing-prob under %%-err rate (FLOAT) [%.2f]\n", opt->fnr);
+		fprintf(stderr, "         -o INT   max #gap opens [%d]\n", opt->max_gapo);
+		fprintf(stderr, "         -t INT   CPU threads for the reconcile step [%d]\n", opt->n_threads);
+		fprintf(stderr, "         -f FILE  write .sai here instead of stdout\n");
+		fprintf(stderr, "         -S       fused alnse: emit SAM directly (single-end)\n");
+		fprintf(stderr, "         -r STR   read group header line (with -S)\n");
+		fprintf(stderr, "         -x STR   GPU engine: `scheme' (bidirectional, default) or `exact'\n\n");
+		fprintf(stderr, "The .sai is bit-exact with `aln' either way; -x only trades kernel speed for\n"
+		                "how many reads the CPU must re-align. `exact' exists for A/B measurement.\n\n");
+		return 1;
+	}
 	const char *prefix = argv[optind], *fq = argv[optind+1];
 	if (getenv("DFS_WARP_CAP")) CAP_SM = atoi(getenv("DFS_WARP_CAP"));
 	if (getenv("DFS_WARP_GCAP")) CAP_GL = atoi(getenv("DFS_WARP_GCAP"));
@@ -128,7 +146,10 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 	int nT = opt->n_threads > 0 ? opt->n_threads : 1;
 	int do_histo = getenv("GPUALN_HISTO") != NULL;
 	int use_order = getenv("GPUALN_NOORDER") ? 0 : 1;
-	int use_scheme = getenv("GPUALN_SCHEME") ? 1 : 0;
+	/* GPUALN_SCHEME used to select this engine; it is the default now, so honour old scripts with a
+	 * one-line notice rather than silently ignoring the variable they set. */
+	if (getenv("GPUALN_SCHEME"))
+		fprintf(stderr, "[aln-gpu] note: GPUALN_SCHEME is obsolete -- the scheme engine is the default; use `-x exact' to opt out\n");
 	int use_dual = getenv("GPUALN_DUAL") ? 1 : 0;
 	int bat = getenv("GPUALN_BATCH") ? atoi(getenv("GPUALN_BATCH")) : 1;   /* reads interleaved per reconcile thread */
 	if (bat < 1) bat = 1; if (bat > 8) bat = 8;   /* two reads/warp -> per-lane MLP=2 */   /* bidirectional search-scheme engine */   /* longest-first scheduling (A/B knob) */   /* opt-in per-length-band node-pop/flag histogram */

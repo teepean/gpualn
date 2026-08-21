@@ -1420,3 +1420,26 @@ carries attribution + the "not endorsed by / don't report to bwa" disclaimer.
 | sub100k | `eecf35c15db452bfe0500ce0b9dbd723` | ok | ok |
 
 Legacy `gpualn gpualn ...` invocation reproduces `4b068014...` too, so the alias is live.
+
+## Phase 22 — the scheme engine becomes the default, selected by `-x` instead of an env var
+
+The bidirectional search-scheme engine had been opt-in behind `GPUALN_SCHEME=1` since Phase 13. It
+is byte-identical to CPU `bwa aln` on every golden set plus ~4.3 M reads of whole-library data, the
+covering property of all four scheme tables is re-verified at every startup, and reads it cannot
+represent (K>=5, or len>127) fall back per-read to the exact engine inside the kernel. There is no
+remaining reason to make users discover an environment variable to get a 20x kernel.
+
+- **Default flipped**: `use_scheme = 1` at declaration; nothing reads `GPUALN_SCHEME` any more.
+- **`-x STR`** selects the engine: `scheme` (default) or `exact`. Unknown values are a hard error,
+  not a silent fallback. `exact` is kept because A/B measurement needs both engines in one binary.
+- `aln-gpu` with no arguments now prints a real option list instead of a one-line usage string.
+- **Old scripts**: `GPUALN_SCHEME` in the environment prints
+  `note: GPUALN_SCHEME is obsolete ... use \`-x exact\` to opt out` and is otherwise ignored. Anyone
+  who set it wanted the scheme engine and still gets it — the variable was presence-tested, so
+  `GPUALN_SCHEME=0` also meant *on* and nobody could have been using it to disable.
+
+Engine selection confirmed live, not just by md5: the default prints the four `covering verified`
+lines and the `scheme-fallback` statistic, `-x exact` prints `prefiltered` instead.
+
+Re-validated at `-t 16`, all three golden sets x {default, `-x scheme`, `-x exact`} = 9 runs, every
+one byte-identical: sub2k `4b068014`, sub10k `54410c75`, sub100k `eecf35c1`.
