@@ -1564,9 +1564,9 @@ alone. Sweeping it (`DFS_WARP_CAP` / `DFS_WARP_WPB`, sub100k, scheme engine, bes
 
 Occupancy runs the WRONG WAY over most of that range. Halving resident warps from 8 to 2 is 1.27x
 faster; the cliff only arrives at 1 warp/SM. Node-pops barely move (764 M -> 788 M), so this is not
-less work -- it is the same work at 0.61 -> 0.79 G-pops/s, because a deeper stack spills less to the
-global backing. The Phase 6 intuition that occupancy governs this kernel is false at the current
-design point.
+less work -- it is the same work at 0.61 -> 0.79 G-pops/s. ~~because a deeper stack spills less to
+the global backing.~~ **Wrong -- see Phase 26 for the real mechanism.** The Phase 6 intuition that
+occupancy governs this kernel is false at the current design point.
 
 ### Per-engine defaults, because the two engines want opposite geometries
 
@@ -1582,5 +1582,42 @@ sub100k **0.981 s**, strided20k **0.909 s**. All goldens byte-identical on both 
 
 ### Still open
 
-`Avg active threads per warp = 12.14 of 32` -- 62% of lanes idle, because the frontier usually holds
-fewer than 32 nodes. That is now the largest single inefficiency in the kernel and it is untouched.
+`Avg active threads per warp = 12.14 of 32`. **The reading given here first -- "the frontier usually
+holds fewer than 32 nodes" -- was wrong; see Phase 26.**
+
+## Phase 26 — the CAP_SM win was lane packing, not spilling; the frontier was never short
+
+Chased the Phase 25 loose end with the engine's own instrumentation (`make bwa-aln-gpu-instr`,
+`pops/waves` = mean active lanes) instead of ncu, because it needs no root and it measures the
+frontier directly. sub100k, scheme engine:
+
+| CAP_SM | wpb | waves | mean active lanes | spills | kernel |
+| --- | --- | --- | --- | --- | --- |
+| 512 | 4 | 7,469,811 | 25.74 / 32 (80%) | 236 | 1.240 s |
+| 1024 | 4 | 6,217,644 | 31.01 / 32 (97%) | 11 | 1.036 s |
+| **1280** | **2** | **6,196,136** | **31.34 / 32 (98%)** | 2 | **0.975 s** |
+| 1792 | 1 | 6,145,007 | 31.43 / 32 (98%) | 0 | 0.988 s |
+
+**Two corrections to Phase 25.**
+
+1. **The mechanism is not spill reduction.** Spills were already negligible at the old default --
+   236 in 7.5 M waves, 0.003%. Removing them cannot buy 27%. The actual mechanism is the lane-count
+   throttle `int r9 = room / 9` (`dfs_engine.cuh:146`), where `room = CAP_SM - sp`: it reserves
+   space for up to 9 children per popped node, so a shallow stack throttles how many lanes may pop
+   at all. Raising CAP_SM unthrottles it: 25.74 -> 31.34 active lanes, and waves drop 7.47 M ->
+   6.20 M = **1.21x fewer waves**, against a measured 1.27x kernel speedup. The waves account for
+   nearly all of it.
+
+2. **The frontier was never the problem.** Phase 25 read ncu's `Avg Active Threads Per Warp = 12.14`
+   as "the frontier usually holds fewer than 32 nodes". It does not: at that very configuration the
+   frontier was already 80% full. The two metrics measure different things -- `pops/waves` counts
+   nodes expanded per wave, while ncu averages over *all* executed instructions, including the
+   `if (lane == 0)` bookkeeping and the divergent two-pass child generation. The ncu figure is real
+   but it is about intra-iteration divergence, not frontier size.
+
+**Lane packing is now essentially exhausted**: 98% at the shipped default, and 1792 gets 98% too.
+At most 2% remains, so tightening the conservative `/9` child bound is not worth doing.
+
+The open question is therefore re-scoped: what does `Avg Active Threads Per Warp` read at the NEW
+default, and how much of the gap is lane-0-only bookkeeping versus divergence inside the expand
+macro? That needs a fresh ncu run (root, `--replay-mode application`).
