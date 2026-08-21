@@ -41,13 +41,14 @@
 #include <stdint.h>
 
 #define SCH_MAXK 4    /* largest K with a validated table; K>SCH_MAXK falls back to exact DFS */
-#define SCH_NSLOT 6   /* c_sch entries: 0..SCH_MAXK plus SCH_K3ALT. NOT a K bound -- keeping these
+#define SCH_NSLOT 7   /* c_sch entries: 0..SCH_MAXK plus SCH_K3ALT. NOT a K bound -- keeping these
                        * separate is load-bearing: raising SCH_MAXK to make room for an alternative
                        * table stops K=5 reads falling back and silently runs them on a K=3 scheme,
                        * i.e. false negatives. */
 #define SCH_MAXP 8
 #define SCH_MAXS 8
 #define SCH_K3ALT 5   /* c_sch slot for the alternative K=3, P=4 table */
+#define SCH_K5     6   /* c_sch slot for the K=5, P=6 table (opt-in, GPUALN_K5=1) */
 
 struct SchemeTab {
 	int P, ns;                                   /* parts, number of searches */
@@ -59,9 +60,11 @@ struct SchemeTab {
 #ifdef FM_DEVICE_DEFINE_CONST
 __constant__ SchemeTab c_sch[SCH_NSLOT];
 __constant__ int c_k3alt_maxlen;      /* K=3 reads at or below this length use the P=4 table */
+__constant__ int c_k5_enable;         /* 1 = route K=5 reads to the P=6 table instead of exact DFS */
 #else
 extern __constant__ SchemeTab c_sch[SCH_NSLOT];
 extern __constant__ int c_k3alt_maxlen;
+extern __constant__ int c_k5_enable;
 #endif
 
 /* ---- host-side table definition + validation ----
@@ -98,6 +101,14 @@ static const SchRaw SCH_RAW[] = {
 	{3,4,4, {"0123","3210","1023","2103"},
 	        {"0000","0000","0000","0000"},
 	        {"0223","0233","0233","0123"}, SCH_K3ALT},
+	/* K=5, p=6, 5 searches -- derived here (cuda/tools/find_scheme.py, exact-partition mode):
+	 * an exact PARTITION of the 462 error distributions, one search each, redundancy 1.00 like
+	 * the published tables. Its U schedule is loose (the budget opens after part 0), which is
+	 * why it is opt-in: the question is only whether it beats the plain backtracking DFS that
+	 * K=5 reads use today, not whether it is a good scheme by SeqAn3/Renders standards. */
+	{5,6,5, {"012345","102345","210345","210345","321045"},
+	        {"000000","022222","013333","024444","003555"},
+	        {"155555","055555","015555","125555","023555"}, SCH_K5},
 	/* K=4, p=5, 5 searches -- Renders et al. multiple_opt/4 scheme1 */
 	{4,5,5, {"01234","12034","21034","34210","43210"},
 	        {"00222","00000","01111","00003","01114"},
@@ -171,6 +182,9 @@ static int sch_upload(int verbose)
 	}
 	if (cudaMemcpyToSymbol(c_sch, h, sizeof h) != cudaSuccess) return 1;
 	/* 0 disables the alternative table entirely; -1 (default) means "every K=3 read". */
+	int k5on = getenv("GPUALN_K5") ? atoi(getenv("GPUALN_K5")) : 0;
+	if (cudaMemcpyToSymbol(c_k5_enable, &k5on, sizeof k5on) != cudaSuccess) return 1;
+	if (verbose) fprintf(stderr, "[scheme] K=5 P=6 table: %s\n", k5on ? "ON" : "off (K=5 falls back to exact DFS)");
 	int k3alt = getenv("GPUALN_K3ALT") ? atoi(getenv("GPUALN_K3ALT")) : 0;
 	if (k3alt < 0) k3alt = SCH_MAXLEN_HOST;
 	if (verbose) fprintf(stderr, "[scheme] K=3 P=4 alt table: %s\n",

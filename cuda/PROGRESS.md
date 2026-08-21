@@ -1772,3 +1772,69 @@ have no scheme table and fall back to the exact engine. A covering K=5 table wou
 correctness does not depend on the cost model -- `sch_validate()` verifies covering exhaustively at
 startup, so a mediocre scheme is safe, merely possibly slower than the fallback it replaces. Note a
 K=6 scheme also covers K=5, so Columba's even-k family is usable if a K=5 table cannot be found.
+
+## Phase 30 — K=5 scheme attempt: REFUTED at 49x worse, and why the generator cannot do this
+
+Target: the d=5 band, 24.1% of node-pops from 10% of reads (Phase 29), currently served by the
+exact backtracking DFS at 19,055 pops/read.
+
+### The generator flaw, quantified
+
+Phase 29's table was built by weighted **set cover**, which is the wrong formulation. Set cover
+rewards covering more distributions per search, and `L` only ever *restricts* coverage -- so greedy
+always drives every `L` to zero, and the searches redo each other's work. Measuring redundancy
+(mean number of searches admitting each error distribution):
+
+| scheme | redundancy |
+| --- | --- |
+| SeqAn3 K=3 P=5 | **1.00** -- a perfect partition |
+| Renders K=4 P=5 | 1.05 |
+| Phase 29's K=3 P=4 | **1.94** |
+
+That is the quantitative explanation of Phase 29's 1.46x regression: 1.94x redundant exploration,
+partly offset by the longer seed. The published tables are near-perfect PARTITIONS, not covers.
+
+### Reformulated as exact cover -- and it still fails, for a second reason
+
+`cuda/tools/find_partition.py` searches for exact partitions (disjoint admitted sets, union =
+everything) using per-position bitmasks. It finds them easily: K=5 P=6 in 1.7 s, K=5 P=7 in 15 s,
+K=6 P=7 in 72 s, all with redundancy 1.00.
+
+But a partition is only half the requirement. Greedy disjoint cover picks the search admitting the
+most distributions, which is always the LOOSEST one -- `U="155555"`, i.e. the full budget opens
+immediately after part 0. Biasing the objective toward tight `U` (minimise sum(U), or sum(U)/n)
+makes greedy paint itself into a corner and fail to complete a partition at all. The published
+tables achieve **both** perfect disjointness and a deferred budget; that is what their ILP /
+branch-and-bound machinery is for, and greedy cannot reach it.
+
+### Measured anyway, because the baseline is only the plain DFS
+
+The K=5 P=6 partition was wired in behind `GPUALN_K5=1` and measured against the fallback it would
+replace:
+
+| d=5 band | node-pops |
+| --- | --- |
+| exact backtracking DFS (today) | **189.8 M** |
+| K=5 P=6 partition, loose U | **9,345.9 M** |
+
+**49x worse.** Total pops 788 M -> 9,944 M. `.sai` still `eecf35c1` -- covering was validated, so the
+superset contract held throughout; the scheme is correct, just catastrophically slow.
+
+The reason is instructive: bwa's DFS prunes with the per-position width bound `w_bid[i]` -- the
+minimum number of errors any completion of the remaining prefix must incur. That is a strong,
+position-dependent bound. A scheme's `U` is a much weaker part-granular bound, and `U="155555"`
+means 5 errors allowed over the last 53 bases of a 64 bp read behind a 10 bp seed. A scheme only
+beats the DFS when its `U` schedule is genuinely tight, which is exactly what could not be
+generated.
+
+### Verdict
+
+Both algorithmic attempts in Phases 29-30 are refuted, for two different and now-understood
+reasons. Producing a K=5 table that beats the DFS needs a real optimiser over (pi, L, U) with a
+validated cost model -- the work the Renders and SeqAn3 papers did -- not a greedy heuristic. The
+infrastructure is left in place for that: multi-slot tables, per-(K,len) slot selection
+(`d_sch_slot`), exhaustive startup validation, both generators under `cuda/tools/`, and opt-in
+flags `GPUALN_K3ALT` / `GPUALN_K5`, both default OFF.
+
+Shipped behaviour is unchanged: sub100k kernel 0.973 s, goldens `4b068014` / `54410c75` /
+`eecf35c1` on both engines.

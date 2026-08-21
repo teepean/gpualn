@@ -49,6 +49,17 @@
  * only shrink. The full-range interval is never stored (SST_E marks "no pattern yet"). */
 struct SNode { uint64_t x0, x1; uint32_t x2, p; };
 
+/* Which c_sch entry serves (K, len); -1 means "no table, use the exact backtracking engine".
+ * Kept separate from SCH_MAXK on purpose: conflating the two once made K=5 reads silently run on
+ * a K=3 scheme, which is a false-negative generator (Phase 29). */
+__device__ __forceinline__ int d_sch_slot(int K, int len)
+{
+	if (len > SCH_MAXLEN) return -1;
+	if (K == 3 && len <= c_k3alt_maxlen) return SCH_K3ALT;
+	if (K == 5) return c_k5_enable ? SCH_K5 : -1;
+	return (K >= 1 && K <= SCH_MAXK) ? K : -1;
+}
+
 __device__ __forceinline__ uint32_t spack(int lo,int hi,int mm,int go,int ge,int st,int j)
 { return (uint32_t)lo | ((uint32_t)hi<<7) | ((uint32_t)mm<<14) | ((uint32_t)go<<19)
        | ((uint32_t)ge<<22) | ((uint32_t)st<<26) | ((uint32_t)j<<28); }
@@ -64,9 +75,7 @@ __device__ inline int d_scheme_search(const fmidx_dev fm, const uint8_t *seq, in
 {
 	const unsigned FULL = 0xffffffffu;
 	int lane = threadIdx.x & 31;
-	/* K=3 short reads may use the P=4 table: cost scales with part length = len/P (Phase 29),
-	 * and fewer parts means longer, more selective parts. */
-	const SchemeTab &T = c_sch[(K == 3 && len <= c_k3alt_maxlen) ? SCH_K3ALT : K];
+	const SchemeTab &T = c_sch[d_sch_slot(K, len)];
 	int P = T.P;
 	unsigned long long nn = *nn_io;
 
@@ -234,9 +243,7 @@ __device__ inline int d_scheme_has_hit(const fmidx_dev fm, const uint8_t *seq, i
 	for (int j = 0; j < len; ++j) if (seq[j] > 3) ++nN;
 	if (nN > K) { if (lane==0) *nn_out = 0; return 0; }
 
-	/* K=3 short reads may use the P=4 table: cost scales with part length = len/P (Phase 29),
-	 * and fewer parts means longer, more selective parts. */
-	const SchemeTab &T = c_sch[(K == 3 && len <= c_k3alt_maxlen) ? SCH_K3ALT : K];
+	const SchemeTab &T = c_sch[d_sch_slot(K, len)];
 	int pb[SCH_MAXP + 1];
 	for (int t = 0; t <= T.P; ++t) pb[t] = (int)(((long long)len * t) / T.P);
 
@@ -286,7 +293,7 @@ __global__ void k_dfs_scheme(fmidx_dev fm, const uint8_t *seq, const uint64_t *w
 		ReadParam p = rp[r];
 
 		int flagged = 0; unsigned long long nn = 0; int hh;
-		if (p.max_diff >= 1 && p.max_diff <= SCH_MAXK && p.len <= SCH_MAXLEN) {
+		if (p.max_diff >= 1 && d_sch_slot(p.max_diff, p.len) >= 0) {
 			hh = d_scheme_has_hit(fm, seq + p.seq_off, p.len, p.max_diff,
 			                      max_gapo, max_gape, sst, CAP_SM, budget, &flagged, &nn);
 		} else {
