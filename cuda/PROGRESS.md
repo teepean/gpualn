@@ -1633,10 +1633,14 @@ Three configurations, one ncu sweep (`sub10k_ncu.fq`, scheme engine, application
 | **1280** | **2** | **1.88 (3.91%)** | **84.61%** | 8.45% | 0.70% | **0.908 s** |
 
 **Monotonic in all three columns: fewer resident warps -> higher L1 hit rate -> shorter kernel.**
+**Caution -- the causal reading below is REFUTED in Phase 28.** The correlation is real; L1 capacity
+is worth only ~2%, so it cannot be what drives the 25% swing.
 DRAM throughput is flat at 0.66-0.70% throughout, so this is not a bandwidth effect; L2 hit rate
 falls only because L1 absorbs the traffic that used to reach it.
 
-This is the unifying explanation for a long list of failures that were each written off separately:
+~~This is the unifying explanation for a long list of failures that were each written off
+separately:~~ **Withdrawn in Phase 28 -- measured directly, L1 capacity buys ~2%, not 25%.** The
+list below stays interesting but has no single explanation:
 
 - Idea B (1.16x at shipped occupancy) -- occupancy was the wrong axis.
 - NPL=2, the 20-byte dual engine, the 12-byte dual engine (14% slower at the exact target config).
@@ -1666,3 +1670,40 @@ block we are in the 64 KB-shared bucket, so L1 gets ~64 KB. Dropping the request
 move to the 32 KB bucket and hand L1 ~96 KB -- a 50% capacity increase for the resource that is
 actually binding. Whether that is reachable without re-throttling `r9` or falling off the 1-warp
 cliff is the next thing to measure, and it is a measurement, not a rewrite.
+
+## Phase 28 — L1 capacity measured directly: worth ~2%. Phase 27's causal claim is withdrawn.
+
+Phase 27 inferred "L1-capacity-bound" from a correlation across the occupancy sweep. Correlation
+is not enough, so it was tested directly. Two new diagnostic knobs make a clean A/B possible:
+`GPUALN_CARVEOUT` (percent of the 128 KB block given to shared; 0 = max L1) and `GPUALN_MAXBLK`
+(cap blocks/SM below what occupancy allows). The cap is essential -- without it, shrinking shared
+memory immediately raises blocks/SM, so warps and L1 move together and nothing is isolated.
+
+Configuration: `CAP_SM=640 wpb=1` (15 KB/block), **2 blocks/SM pinned = 2 warps/SM either way**,
+identical stack depth, identical wave count. The only difference is the shared/L1 split.
+Six interleaved run-pairs on sub100k, to cancel thermal drift:
+
+| shared / L1 | runs | median |
+| --- | --- | --- |
+| 64 KB / **64 KB** | 1.188 1.169 1.186 1.186 1.170 1.184 | 1.184 s |
+| 32 KB / **96 KB** | 1.163 1.147 1.162 1.161 1.170 1.160 | **1.161 s** |
+
+**A 50% increase in L1 capacity buys 2.0%.** Real, reproducible, and nowhere near enough to explain
+the 25% swing across the Phase 27 occupancy sweep. The higher L1 hit rate at low occupancy is a
+by-product of running fewer warps, not the reason low occupancy is faster.
+
+**The CAP_SM speedup was already fully explained by Phase 26**: the `r9 = room / 9` throttle,
+1.21x fewer waves against a 1.27x speedup. Phase 27 layered a second mechanism on top of an
+explanation that was already sufficient, which is how the over-reach happened.
+
+Nothing to ship: the 2% is only reachable at `CAP_SM<=640`, and that configuration runs 1.161 s
+against the shipped 0.975 s. Both knobs stay in as diagnostics, default off.
+
+### Housekeeping note on this whole investigation
+
+Three mechanism claims in a row turned out wrong -- the ACF's register drop buying an occupancy tier
+(Phase 24), the deeper stack spilling less (Phase 25), and L1 capacity being the binding limiter
+(Phase 27). Each time the *measurement* was sound and reproducible and only the *explanation* was
+wrong, and each time the explanation was adopted from a correlation without an isolating test. The
+lesson is cheap to state and evidently expensive to learn: a knob that changes two things at once
+explains nothing until one of them is pinned.

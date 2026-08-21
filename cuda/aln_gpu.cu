@@ -194,18 +194,31 @@ extern "C" int bwa_alnse_gpu(int argc, char **argv)
 		/* dual: two 12-byte-node stacks per warp; that is what buys 2 reads/warp at 8 warps/SM */
 		gx.shbytes = use_dual ? (size_t)wpb * 2 * CAP_SM * 12
 		                      : (size_t)wpb * CAP_SM * (use_scheme ? sizeof(SNode) : 20);
+		/* sm_86 splits one 128 KB block between shared memory and L1, quantised (32/64/100 KB
+		 * shared). The kernel is L1-CAPACITY-bound (Phase 27: fewer warps -> higher L1 hit ->
+		 * faster), so trading shared for L1 is worth probing. The driver must still satisfy the
+		 * dynamic request, so this can only bite when shbytes is under a quantisation step.
+		 * GPUALN_CARVEOUT = percent of the block given to SHARED (0 = max L1). */
+		int carveout = getenv("GPUALN_CARVEOUT") ? atoi(getenv("GPUALN_CARVEOUT")) : -1;
 		int mb = 0;
 		if (use_dual) {
 			CK(cudaFuncSetAttribute(k_dfs_warp2_dual, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)gx.shbytes));
+			if (carveout >= 0) CK(cudaFuncSetAttribute(k_dfs_warp2_dual, cudaFuncAttributePreferredSharedMemoryCarveout, carveout));
 			CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&mb, k_dfs_warp2_dual, gx.bdim, gx.shbytes));
 		} else if (use_scheme) {
 			if (sch_upload(g == 0)) { fprintf(stderr, "[scheme] table validation FAILED\n"); return 1; }
 			CK(cudaFuncSetAttribute(k_dfs_scheme, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)gx.shbytes));
+			if (carveout >= 0) CK(cudaFuncSetAttribute(k_dfs_scheme, cudaFuncAttributePreferredSharedMemoryCarveout, carveout));
 			CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&mb, k_dfs_scheme, gx.bdim, gx.shbytes));
 		} else {
 			CK(cudaFuncSetAttribute(k_dfs_warp2, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)gx.shbytes));
+			if (carveout >= 0) CK(cudaFuncSetAttribute(k_dfs_warp2, cudaFuncAttributePreferredSharedMemoryCarveout, carveout));
 			CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&mb, k_dfs_warp2, gx.bdim, gx.shbytes));
 		}
+		/* GPUALN_MAXBLK caps blocks/SM below what occupancy allows. Needed to hold warps/SM
+		 * fixed while varying the shared/L1 carveout -- otherwise the two are coupled through
+		 * the same 128 KB and no clean A/B is possible. */
+		if (getenv("GPUALN_MAXBLK")) { int c = atoi(getenv("GPUALN_MAXBLK")); if (c > 0 && c < mb) mb = c; }
 		gx.nblocks = mb > 0 ? mb * numSM : numSM;
 		size_t nwarps = (size_t)gx.nblocks * wpb;
 		gx.Gdual = NULL;
