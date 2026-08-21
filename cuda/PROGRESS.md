@@ -1621,3 +1621,48 @@ At most 2% remains, so tightening the conservative `/9` child bound is not worth
 The open question is therefore re-scoped: what does `Avg Active Threads Per Warp` read at the NEW
 default, and how much of the gap is lane-0-only bookkeeping versus divergence inside the expand
 macro? That needs a fresh ncu run (root, `--replay-mode application`).
+
+## Phase 27 — the kernel is L1-CAPACITY-bound; that is why every occupancy idea failed
+
+Three configurations, one ncu sweep (`sub10k_ncu.fq`, scheme engine, application replay):
+
+| CAP_SM | wpb | achieved warps/SM | L1/TEX hit | L2 hit | DRAM | duration |
+| --- | --- | --- | --- | --- | --- | --- |
+| 512 | 4 | 4.40 (9.17%) | 77.49% | 20.29% | 0.66% | 1.14 s |
+| 1024 | 4 | 3.10 (6.45%) | 80.35% | 16.08% | 0.68% | 1.00 s |
+| **1280** | **2** | **1.88 (3.91%)** | **84.61%** | 8.45% | 0.70% | **0.908 s** |
+
+**Monotonic in all three columns: fewer resident warps -> higher L1 hit rate -> shorter kernel.**
+DRAM throughput is flat at 0.66-0.70% throughout, so this is not a bandwidth effect; L2 hit rate
+falls only because L1 absorbs the traffic that used to reach it.
+
+This is the unifying explanation for a long list of failures that were each written off separately:
+
+- Idea B (1.16x at shipped occupancy) -- occupancy was the wrong axis.
+- NPL=2, the 20-byte dual engine, the 12-byte dual engine (14% slower at the exact target config).
+- The CAP_SM sweep running the "wrong" way for its whole range (Phase 25).
+
+They all added concurrency to a kernel whose limiter is **L1 capacity per warp**. Each warp's DFS
+has a reuse working set; interleaving more warps lengthens reuse distance until it exceeds L1, and
+the extra latency-hiding never pays for the lost hits. The cliff at 1 warp/SM is the other end of
+the same curve: below two warps there is not enough parallelism to cover even an L1 hit.
+
+`smsp__thread_inst_executed_per_inst_executed` sits at 12.14 / 12.84 / 12.95 across the three --
+essentially constant while frontier packing went 80% -> 98%. Final confirmation that this metric
+tracks lane-0 bookkeeping and expand-macro divergence, not the frontier (Phase 26).
+
+### What this rules IN and OUT
+
+**OUT: shrinking `SNode`.** `{uint64_t x0, x1; uint32_t x2, p}` = 24 B, and 16 B is achievable (the
+three interval fields need 33 bits each on a 6.2 Gbp index). But a smaller node feeds exactly two
+levers -- more resident warps, or a deeper stack -- and both are already past their optimum: 4
+warps/SM at 97% packing (CAP_SM=1024) is 6% slower than 2 warps/SM, and CAP_SM=1792 gains nothing
+over 1280. This is also consistent with the 12-byte attempt measuring 14% slower. Not worth
+rebuilding.
+
+**IN: shrinking the per-warp L1 working set, or giving L1 more capacity.** On sm_86 shared memory
+and L1 share one 128 KB block, and the split is quantised (32 / 64 / 100 KB shared). At 60 KB per
+block we are in the 64 KB-shared bucket, so L1 gets ~64 KB. Dropping the request under 32 KB would
+move to the 32 KB bucket and hand L1 ~96 KB -- a 50% capacity increase for the resource that is
+actually binding. Whether that is reachable without re-throttling `r9` or falling off the 1-warp
+cliff is the next thing to measure, and it is a measurement, not a rewrite.
