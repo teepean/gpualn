@@ -1474,3 +1474,37 @@ the *production* pipeline's short branch, which is a different thing from a tuni
 
 Probe verified live on all three paths: correct golden passes and reports the mix, a wrong
 `--golden` aborts before any search burns GPU time, `--engine exact` reports its baseline alone.
+
+## Phase 24 — CompileIQ re-run on the scheme engine: 1.12-1.13x, now applied by default
+
+First tuning run under the Phase 23 rules (`--engine scheme`, production-representative sub100k at
+10.30% fallback). 4 generations x pool 16, 8m16s wall, best found at generation 1.
+
+```
+[tune] sub100k.fq: 10.30% of reads take the fallback branch inside k_dfs_scheme (baseline 1.558s)
+[tune] baseline (no controls): 1.479s
+[tune] best 1.308s vs baseline 1.479s = 1.131x
+```
+
+**Independently re-measured** outside the tuner's harness, production `gpualn` build, best of 4:
+
+| kernel | no ACF | with ACF | ratio |
+| --- | --- | --- | --- |
+| `k_dfs_scheme` (default) | 1.438 s | **1.286 s** | 1.118x |
+| `k_dfs_warp2` (`-x exact`) | 1.839 s | **1.628 s** | 1.130x |
+
+The two run distributions do not overlap (base 1.438-1.482, ACF 1.286-1.306), so this is not drift.
+
+**Mechanism**: `k_dfs_scheme` drops REG:95 -> REG:86 at the same STACK:40. Nine registers is the
+difference between occupancy tiers here, which is the resource that has governed this kernel since
+Phase 6.
+
+**The Phase 14 claim that ACFs never transfer needs qualifying.** This one helps BOTH kernels, even
+though it raises `k_dfs_warp2` from REG:80 to REG:88. A plausible reason is exactly the Phase 23
+correction: tuned on a 10.3%-fallback set, the objective exercised both the scheme path and the
+inlined `d_dfs_has_hit_warp2` fallback, so the schedule it found is good for both bodies. Plausible,
+not proven -- one data point, and the register counts moved in opposite directions.
+
+Wired into the Makefile as `ACF?=cuda/gpualn_scheme.acf`, applied to `aln_gpu.o` and `bwa-aln-gpu`.
+Build with `make ACF=` to disable. Golden gates re-validated through the real build: sub2k
+`4b068014`, sub10k `54410c75`, sub100k `eecf35c1`.

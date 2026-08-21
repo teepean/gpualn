@@ -50,6 +50,11 @@ bwamem-lite:libbwa.a example.o
 NVCC?=		nvcc
 CUDA_ARCH?=	sm_86
 NVCCFLAGS?=	-O3 -std=c++14 -arch=$(CUDA_ARCH) -lineinfo
+# ptxas Advanced Control File found by CompileIQ (cuda/tune_compileiq.py). Tuned on the scheme
+# engine over a production-representative sub100k (10.3% fallback); measured 1.12x on k_dfs_scheme
+# and 1.13x on k_dfs_warp2, .sai byte-identical. Build with ACF= to disable.
+ACF?=		cuda/gpualn_scheme.acf
+ACFFLAG=	$(if $(ACF),-Xptxas=--apply-controls=$(ACF),)
 
 fmtest:libbwa.a cuda/fmtest.cu cuda/fm_device.cuh
 		$(NVCC) $(NVCCFLAGS) -I. cuda/fmtest.cu -o $@ -L. -lbwa $(LIBS)
@@ -61,8 +66,8 @@ dfstest:libbwa.a $(DFSDEPS) cuda/dfstest.cu cuda/fm_device.cuh
 
 ALNDEPS=	$(DFSDEPS) bwase.o
 # standalone GPU tool (its own main via -DALN_GPU_MAIN)
-bwa-aln-gpu:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh
-		$(NVCC) $(NVCCFLAGS) -DALN_GPU_MAIN -I. cuda/aln_gpu.cu $(ALNDEPS) -o $@ -L. -lbwa $(LIBS)
+bwa-aln-gpu:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh $(ACF)
+		$(NVCC) $(NVCCFLAGS) $(ACFFLAG) -DALN_GPU_MAIN -I. cuda/aln_gpu.cu $(ALNDEPS) -o $@ -L. -lbwa $(LIBS)
 
 # instrumented twin: FM-probe accounting + (depth,errors) node-pop profile under GPUALN_HISTO=1.
 # Separate binary so production codegen (register count!) is untouched.
@@ -70,8 +75,8 @@ bwa-aln-gpu-instr:libbwa.a $(ALNDEPS) cuda/aln_gpu.cu cuda/fm_device.cuh cuda/df
 		$(NVCC) $(NVCCFLAGS) -DALN_GPU_MAIN -DDFS_INSTRUMENT -I. cuda/aln_gpu.cu $(ALNDEPS) -o $@ -L. -lbwa $(LIBS)
 
 # CUDA-enabled bwa with the `gpualn` subcommand (default `make` stays CPU-only / CUDA-free)
-aln_gpu.o:cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh
-		$(NVCC) $(NVCCFLAGS) -I. -c cuda/aln_gpu.cu -o $@
+aln_gpu.o:cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh $(ACF)
+		$(NVCC) $(NVCCFLAGS) $(ACFFLAG) -I. -c cuda/aln_gpu.cu -o $@
 main_cuda.o:main.c
 		$(CC) -c $(CFLAGS) $(DFLAGS) -DHAVE_CUDA $(INCLUDES) main.c -o $@
 gpualn:libbwa.a $(AOBJS) main_cuda.o aln_gpu.o
