@@ -1100,9 +1100,10 @@ best-of-N; always re-verify a winning ACF with an interleaved A/B.
 
 ### Two findings worth keeping
 1. **ACFs do not transfer between kernels.** The ACF tuned for `k_dfs_warp2` gives ~1.17x there
-   but 0.974-1.014x on `k_dfs_scheme`. Tune the engine you intend to SHIP, and use a read set with
-   0% fallback (L<=63) or the objective silently mixes both kernels. `--reads`/`--golden` exist for
-   this.
+   but 0.974-1.014x on `k_dfs_scheme`. Tune the engine you intend to SHIP; `--engine`, `--reads` and
+   `--golden` exist for this. ~~Use a read set with 0% fallback (L<=63) or the objective silently
+   mixes both kernels.~~ **Corrected in Phase 23** -- see below; the fallback is not a separate
+   kernel, so a representative mix is what you want.
 2. **The winning schedule REINTRODUCED 40 B of stack frame and +9 registers** (on `k_dfs_scheme`;
    `k_dfs_warp2` stayed at 0 B / 89 regs). Removing local memory was worth 40% in Phase 6, yet here
    ptxas trades a little of it back for a better schedule and still wins -- the codegen landscape
@@ -1443,3 +1444,33 @@ lines and the `scheme-fallback` statistic, `-x exact` prints `prefiltered` inste
 
 Re-validated at `-t 16`, all three golden sets x {default, `-x scheme`, `-x exact`} = 9 runs, every
 one byte-identical: sub2k `4b068014`, sub10k `54410c75`, sub100k `eecf35c1`.
+
+## Phase 23 — tuner follows the new default; the "0% fallback" tuning rule was wrong
+
+`cuda/tune_compileiq.py` selected the engine with `GPUALN_SCHEME=1`, which no longer does anything.
+It now passes `-x {scheme,exact}` explicitly via `--engine` (default `scheme`, matching the binary)
+and writes a per-engine ACF: `cuda/gpualn_scheme.acf` or `cuda/gpualn.acf`. Explicit `-x` on every
+child run means the tuned schedule can never be attributed to the wrong kernel, whatever the
+binary's default becomes later.
+
+**Correction to the Phase 14 guidance.** Phase 14 said to tune the scheme engine only on reads with
+0% fallback, "or the objective silently mixes both kernels". That is wrong. There is only ONE
+kernel: `k_dfs_scheme` is a single `__global__` (scheme_engine.cuh:256) and the fallback for
+K>SCH_MAXK / len>SCH_MAXLEN is `d_dfs_has_hit_warp2` called as a device function inside it
+(scheme_engine.cuh:288). Both hot paths share one register allocation and one ptxas schedule.
+
+So the fallback rate is not contamination to be eliminated -- it is a property of the workload the
+ACF is fitted to, and it should MATCH PRODUCTION. Tuning at 0% fallback and shipping to a set that
+runs 10% fits the ACF to only half of the kernel. The rule is inverted from what Phase 14 claimed.
+
+The tuner now probes before searching and prints the mix, e.g.
+`sub10k.fq: 10.07% of reads take the fallback branch inside k_dfs_scheme (baseline 1.261s)`,
+and warns when the rate is 0% that the ACF will fit the scheme path only.
+
+Incidentally this kills the "use L<=63 reads" recipe for tuning: sub100k tops out at 91 bp, well
+under SCH_MAXLEN=127, yet still runs 10.30% fallback. On aDNA at `-n 0.01` the fallback is driven by
+**K>=5**, not by read length. The Phase 13 observation that a 64 bp split sees 0% fallback is about
+the *production* pipeline's short branch, which is a different thing from a tuning corpus.
+
+Probe verified live on all three paths: correct golden passes and reports the mix, a wrong
+`--golden` aborts before any search burns GPU time, `--engine exact` reports its baseline alone.
