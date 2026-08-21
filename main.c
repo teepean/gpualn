@@ -29,6 +29,9 @@
 #include "kstring.h"
 #include "utils.h"
 
+#ifndef GPUALN_VERSION
+#define GPUALN_VERSION "0.1"
+#endif
 #ifndef PACKAGE_VERSION
 #define PACKAGE_VERSION "0.7.19-r1273"
 #endif
@@ -60,17 +63,18 @@ int bwa_alnse_gpu(int argc, char *argv[]); /* GPU BWA-backtrack (cuda/aln_gpu.cu
 static int usage()
 {
 	fprintf(stderr, "\n");
-	fprintf(stderr, "Program: bwa (alignment via Burrows-Wheeler transformation)\n");
-	fprintf(stderr, "Version: %s\n", PACKAGE_VERSION);
-	fprintf(stderr, "Contact: Heng Li <hli@ds.dfci.harvard.edu>\n\n");
-	fprintf(stderr, "Usage:   bwa <command> [options]\n\n");
+	fprintf(stderr, "Program: gpualn (GPU BWA-backtrack for ancient DNA)\n");
+	fprintf(stderr, "Version: %s (gpualn " GPUALN_VERSION ")\n", PACKAGE_VERSION);
+	fprintf(stderr, "Derived: bwa by Heng Li <hli@ds.dfci.harvard.edu>, GPLv3\n");
+	fprintf(stderr, "Source:  https://github.com/teepean/gpualn\n\n");
+	fprintf(stderr, "Usage:   gpualn <command> [options]\n\n");
 	fprintf(stderr, "Command: index         index sequences in the FASTA format\n");
 	fprintf(stderr, "         mem           BWA-MEM algorithm\n");
 	fprintf(stderr, "         fastmap       identify super-maximal exact matches\n");
 	fprintf(stderr, "         pemerge       merge overlapping paired ends (EXPERIMENTAL)\n");
 	fprintf(stderr, "         aln           gapped/ungapped alignment\n");
 #ifdef HAVE_CUDA
-	fprintf(stderr, "         gpualn        GPU BWA-backtrack: aln (.sai) or fused alnse (-S, SAM); single-end, CUDA\n");
+	fprintf(stderr, "         aln-gpu       GPU BWA-backtrack: bit-exact .sai, or fused SAM with -S (single-end)\n");
 #endif
 	fprintf(stderr, "         samse         generate alignment (single ended)\n");
 	fprintf(stderr, "         sampe         generate alignment (paired ended)\n");
@@ -84,10 +88,10 @@ static int usage()
 	fprintf(stderr, "         bwt2sa        generate SA from BWT and Occ\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr,
-"Note: To use BWA, you need to first index the genome with `bwa index'.\n"
-"      There are three alignment algorithms in BWA: `mem', `bwasw', and\n"
-"      `aln/samse/sampe'. If you are not sure which to use, try `bwa mem'\n"
-"      first. Please `man ./bwa.1' for the manual.\n\n");
+"Note: Index the genome first with `gpualn index'. For short (<70 bp) reads --\n"
+"      ancient DNA in particular -- use `aln-gpu' + `samse'; its .sai is bit-exact\n"
+"      with `aln'. For longer reads use `mem'. The bwa manual (`man ./bwa.1')\n"
+"      applies unchanged to every command inherited from bwa.\n\n");
 	return 1;
 }
 
@@ -110,7 +114,8 @@ int main(int argc, char *argv[])
 	else if (strcmp(argv[1], "index") == 0) ret = bwa_index(argc-1, argv+1);
 	else if (strcmp(argv[1], "aln") == 0) ret = bwa_aln(argc-1, argv+1);
 #ifdef HAVE_CUDA
-	else if (strcmp(argv[1], "gpualn") == 0) ret = bwa_alnse_gpu(argc-1, argv+1);
+	/* `aln-gpu` is the preferred spelling; `gpualn` is kept so existing scripts keep working */
+	else if (strcmp(argv[1], "aln-gpu") == 0 || strcmp(argv[1], "gpualn") == 0) ret = bwa_alnse_gpu(argc-1, argv+1);
 #endif
 	else if (strcmp(argv[1], "samse") == 0) ret = bwa_sai2sam_se(argc-1, argv+1);
 	else if (strcmp(argv[1], "sampe") == 0) ret = bwa_sai2sam_pe(argc-1, argv+1);

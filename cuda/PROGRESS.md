@@ -1378,3 +1378,45 @@ Consequences:
 
 Validated at `-t 16`: sub2k `4b068014` and sub100k `eecf35c1` for batch = 1/2/4/8, `bwa gpualn`
 with scheme+batch `eecf35c1`, CPU `bwa aln` `eecf35c1`, dfstest false_neg=0.
+
+## Phase 21 — standalone project: `gpualn` (no longer a bwa fork)
+
+Heng Li will not take GPU code into bwa, so the repo becomes a standalone derivative rather than a
+fork awaiting a PR that will never be merged.
+
+**Scope kept: everything.** `index`/`mem`/`samse`/`sampe`/`bwasw` stay in, unmodified. The aDNA
+pipeline needs `index` and `samse` anyway, and shipping the whole tool means users don't have to
+install bwa *and* gpualn side by side.
+
+**Licensing (checked file by file).** `COPYING` is GPLv3; `bwt_gen.c` is GPL; `bwt.c`, `bntseq.c`,
+`utils.c`, `bwa.c`, `ksw.c`, `bwtindex.c`, `main.c` carry MIT headers; `bwtgap.c`, `bwtaln.c`,
+`bwase.c`, `bwaseqio.c`, `kstring.c`, `malloc_wrap.c`, `bamlite.c`, `QSufSort.c`, `is.c`,
+`kthread.c`, `bwashm.c`, `rope.c`, `rle.c` carry none. GPL is therefore the binding licence for the
+distribution => **the project stays GPLv3**, keeps `COPYING`, keeps every original file header
+unmodified, and states the bwa derivation prominently (`NOTICE`, `README.md`, usage banner).
+
+**Naming.** Binary is `gpualn`, not `bwa` — no collision with a system `/usr/bin/bwa`.
+- `make`     -> `gpualn`     (CUDA)
+- `make cpu` -> `gpualn-cpu` (no CUDA, plain bwa)
+- `bwa` / `bwa-gpu` remain as Makefile aliases so old build scripts don't break.
+
+**Subcommand.** `aln-gpu` is the preferred spelling; **`gpualn` is kept as an alias** so
+`adna_aligner.sh` and any other existing script needs no edit. Both dispatch to `bwa_alnse_gpu`.
+
+**Deliberately NOT changed:** the `@PG ID:bwa PN:bwa` header line in `main.c:105`. Changing it would
+alter every SAM/BAM this tool writes and break byte-comparisons against archived output. It is also
+honest — the alignments really are bwa's, produced by bwa's own `bwt_match_gap`. Revisit only as a
+conscious output-format decision.
+
+**Docs.** New standalone `README.md`; upstream's preserved verbatim as `README-bwa.md`; `NOTICE`
+carries attribution + the "not endorsed by / don't report to bwa" disclaimer.
+
+**Re-validated after the rename**, `-t 16`, both engines, all byte-identical to the CPU goldens:
+
+| set | md5 | exact | scheme |
+| --- | --- | --- | --- |
+| sub2k | `4b068014364ae8d93741be70344be0ed` | ok | ok |
+| sub10k | `54410c755509b8389ae992953dd3476c` | ok | ok |
+| sub100k | `eecf35c15db452bfe0500ce0b9dbd723` | ok | ok |
+
+Legacy `gpualn gpualn ...` invocation reproduces `4b068014...` too, so the alias is live.

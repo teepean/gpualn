@@ -10,7 +10,7 @@ AOBJS=		bwashm.o bwase.o bwaseqio.o bwtgap.o bwtaln.o bamlite.o \
 			bwape.o kopen.o pemerge.o maxk.o \
 			bwtsw2_core.o bwtsw2_main.o bwtsw2_aux.o bwt_lite.o \
 			bwtsw2_chain.o fastmap.o bwtsw2_pair.o
-PROG=		bwa
+PROG=		gpualn-cpu
 INCLUDES=	
 LIBS=		-lm -lz -lpthread
 SUBDIRS=	.
@@ -32,10 +32,16 @@ endif
 .c.o:
 		$(CC) -c $(CFLAGS) $(DFLAGS) $(INCLUDES) $(CPPFLAGS) $< -o $@
 
-all:$(PROG)
+# `make`      -> gpualn        (CUDA build, the point of this project)
+# `make cpu`  -> gpualn-cpu    (no CUDA; builds anywhere, no `aln-gpu` subcommand)
+all:gpualn
 
-bwa:libbwa.a $(AOBJS) main.o
+cpu:$(PROG)
+
+gpualn-cpu:libbwa.a $(AOBJS) main.o
 		$(CC) $(CFLAGS) $(LDFLAGS) $(AOBJS) main.o -o $@ -L. -lbwa $(LIBS)
+
+bwa:gpualn-cpu
 
 bwamem-lite:libbwa.a example.o
 		$(CC) $(CFLAGS) $(LDFLAGS) example.o -o $@ -L. -lbwa $(LIBS)
@@ -68,14 +74,16 @@ aln_gpu.o:cuda/aln_gpu.cu cuda/fm_device.cuh cuda/dfs_engine.cuh
 		$(NVCC) $(NVCCFLAGS) -I. -c cuda/aln_gpu.cu -o $@
 main_cuda.o:main.c
 		$(CC) -c $(CFLAGS) $(DFLAGS) -DHAVE_CUDA $(INCLUDES) main.c -o $@
-bwa-gpu:libbwa.a $(AOBJS) main_cuda.o aln_gpu.o
+gpualn:libbwa.a $(AOBJS) main_cuda.o aln_gpu.o
 		$(NVCC) $(NVCCFLAGS) $(AOBJS) main_cuda.o aln_gpu.o -o $@ -L. -lbwa $(LIBS)
+
+bwa-gpu:gpualn
 
 libbwa.a:$(LOBJS)
 		$(AR) -csru $@ $(LOBJS)
 
 clean:
-		rm -f gmon.out *.o a.out $(PROG) *~ *.a fmtest dfstest bwa-aln-gpu bwa-gpu
+		rm -f gmon.out *.o a.out $(PROG) gpualn *~ *.a fmtest dfstest bidir_cost bwa-aln-gpu bwa-aln-gpu-instr bwa-gpu
 
 depend:
 	( LC_ALL=C ; export LC_ALL; makedepend -Y -- $(CFLAGS) $(DFLAGS) $(CPPFLAGS) -- *.c )

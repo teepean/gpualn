@@ -1,0 +1,19 @@
+# NOTICE
+
+gpualn is a GPU implementation of BWA-backtrack (`bwa aln`) for ancient DNA, derived from
+**bwa** by Heng Li.
+
+- Upstream: https://github.com/lh3/bwa  (bwa 0.7.19-r1273)
+- Upstream authors: Heng Li; Broad Institute / Dana-Farber; Genome Research Ltd.
+- Upstream README preserved verbatim as `README-bwa.md`.
+
+This work is distributed under the **GNU General Public License v3** (see `COPYING`), the licence
+of the bwa distribution it derives from. Individual upstream source files carry their own headers
+(several are MIT-licensed by Genome Research Ltd, `bwt_gen.c` is GPL); all original copyright and
+licence headers are preserved unmodified.
+
+New files added by this project (`cuda/*.cu`, `cuda/*.cuh`) carry GPLv3 headers and are
+Copyright (C) 2026 teepean.
+
+gpualn is **not** endorsed by, affiliated with, or supported by the bwa project or its authors.
+Please report gpualn issues at https://github.com/teepean/gpualn and not to the bwa project.
