@@ -14,11 +14,13 @@ jobs:
         compiler: [gcc, clang]
 
     steps:
-    - name: Checkout bwa
-      uses: actions/checkout@v3
+    - name: Checkout gpualn
+      uses: actions/checkout@v4
 
+    # `make` builds the CUDA binary, which needs nvcc; runners have no CUDA.
+    # `make cpu` builds gpualn-cpu, the CUDA-free build.
     - name: Compile with ${{ matrix.compiler }}
-      run:  make CC=${{ matrix.compiler }}
+      run:  make cpu CC=${{ matrix.compiler }}
 
   build-aarch64:
     runs-on: ubuntu-latest
@@ -27,8 +29,8 @@ jobs:
         compiler: [gcc, clang]
 
     steps:
-    - name: Checkout bwa
-      uses: actions/checkout@v3
+    - name: Checkout gpualn
+      uses: actions/checkout@v4
 
     - name: Compile with ${{ matrix.compiler }}
       uses: uraimo/run-on-arch-action@v2
@@ -37,10 +39,10 @@ jobs:
         distro: ubuntu20.04
         githubToken: ${{ github.token }}
         dockerRunArgs: |
-          --volume "${PWD}:/bwa"
+          --volume "${PWD}:/gpualn"
         install: |
           apt-get update -q -y
           apt-get install -q -y make ${{ matrix.compiler }} zlib1g-dev
         run: |
-          cd /bwa
-          make CC=${{ matrix.compiler }}
+          cd /gpualn
+          make cpu CC=${{ matrix.compiler }}
