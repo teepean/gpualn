@@ -390,3 +390,15 @@ Useful to know it is available for a throughput-bound, non-population-genetic wo
   (`--emit-unpacked-ref` is now opt-in) and does not need it to map. That saves 5.8 GB for hs37d5.
   Nothing in the pipeline reads `.0123` -- fq2bam uses the classic `bwa` index -- so this is safe,
   but do not "fix" a missing `.0123` after a rebuild.
+
+**Applied** to `/home/dnastorage/aDNApipeline/adna_aligner.sh` on 2026-10-14: `BWA_MEM3` now
+defaults to `/home/teemu/sorsa/bwa-mem3-v0141/bwa-mem3`, with the measurement and the "do not add
+`--fast`" warning recorded at the assignment. The stale `# bwa-mem3 with the local hard-cap fix`
+comment at the `mem3)` call site was corrected -- the cap is upstream (PRs #100/#101) and was
+re-verified to behave identically on v0.14.1 (119 -> 152 supplementary records forced to MAPQ 0 on
+the 200 k human set, same counts as 0.2.1). Timestamped backup alongside the script.
+
+Two other scripts in that directory still hardcode the 0.2.1 path and were left alone:
+`paired_mem3.sh:14` (also single-end -- collapsed reads, no `-p` -- so the same verification covers
+it; note it runs `-k 19 -r 2.5` and no `-L 15`, an option set that predates the MEM_OPTS work) and
+`test_supp_rep_hard_cap.sh:24` (a test harness, where pinning the old binary is arguably correct).
