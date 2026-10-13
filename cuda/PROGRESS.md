@@ -1838,3 +1838,24 @@ flags `GPUALN_K3ALT` / `GPUALN_K5`, both default OFF.
 
 Shipped behaviour is unchanged: sub100k kernel 0.973 s, goldens `4b068014` / `54410c75` /
 `eecf35c1` on both engines.
+
+## Phase 31 — measured accuracy against known truth (see BENCHMARK_ACCURACY.md)
+
+Built a ground-truth benchmark modelled on Oliva et al. 2021, because every accuracy claim in this
+project so far was either inferred from raw mapped counts or cited from their paper. 300k simulated
+damaged aDNA reads (20-169 bp, chr22 + NA19471 SNVs, La Brana damage), mapped to hs37d5.
+
+Headline: **hybrid c=64 accuracy 93.251% vs all-aln 93.241% vs mem 87.810%**. The hybrid matches
+all-aln and beats mem by 5.4 points. mem maps 0% of 20-29 bp reads.
+
+The measurement springs a trap worth remembering: **mem has higher PRECISION than aln (94.54 vs
+93.27) and 5.4 points lower ACCURACY**, because it declines to map 7% of reads. Precision alone or
+mapped-count alone ranks the two backwards.
+
+Cutoff question settled: unfiltered, the accuracy curve is flat within 0.01 points from cutoff 40 to
+100, so c=64 is optimal and the old "keep auto/64" call is confirmed -- though for a different
+reason than assumed (the cutoff is simply irrelevant there, not a precision win). Under MAPQ>=25,
+accuracy rises monotonically with cutoff and all-aln wins by 0.78 points.
+
+Their published code does not run: an R parse error, a Python tab/space SyntaxError, and a 1000G VCF
+filename that no longer exists. Full detail, caveats and the harness in `cuda/tools/benchmark/`.
