@@ -116,3 +116,78 @@ in aln runtime on 64-169 bp reads.
 `gpualn` was md5-identical to CPU `bwa aln` on this dataset (`043cb47f...`), which is an independent
 bit-exactness check on a read population nothing like the aDNA libraries used so far: simulated,
 damaged, uniformly spread over 20-169 bp.
+
+# Reference bias at heterozygous SNPs
+
+The metric that matters most for aDNA downstream work. 1.5 M simulated reads (the read count Oliva
+et al. used), chr22 + NA19471, La Brana damage, hs37d5. The simulator draws each read's haplotype
+50/50, so at a het site the **expected alt-allele fraction is exactly 0.500**; anything below is
+reference bias. `cuda/tools/benchmark/ref_bias.py`.
+
+Transitions (A<->G, C<->T) are reported separately from transversions because C>T / G>A damage
+masquerades as a real allele at transition sites and cannot at transversion sites. **Transversions
+are the damage-immune read on mapper bias** and all headline numbers below use them.
+
+## The control comes first
+
+A "perfect mapper" measurement, counting alleles at the sites each read TRULY spans using the
+encoded truth, isolates bias from damage and sequencing error alone:
+
+| | ref | alt | alt_frac | bias |
+| --- | --- | --- | --- | --- |
+| transversion | 23,093 | 23,057 | **0.49961** | +0.00039 |
+| transition | 55,416 | 55,226 | 0.49914 | +0.00086 |
+
+0.49961 against an expected 0.5, n = 46,150, SE 0.0023. The simulation carries no built-in bias, so
+any deviation in the alignments is attributable to the mapper.
+
+## Measured bias (transversions)
+
+| strategy | no filter | MAPQ>=25 | MAPQ>=25, trim 5 |
+| --- | --- | --- | --- |
+| control (perfect mapper) | +0.00039 | — | — |
+| BWA1 `aln` | +0.01312 | +0.00952 | +0.00857 |
+| **HYBRID c=64** | **+0.01196** | **+0.00889** | **+0.00735** |
+| `mem -k19 -r2.5 -L15` | +0.01482 | +0.01181 | +0.01047 |
+| `mem -L15` (no -k/-r) | — | +0.01188 | — |
+| `mem` default | — | +0.01342 | — |
+
+**Reproduces Oliva et al.'s MAPQ finding**: filtering reduces bias for every mapper (aln 1.31 ->
+0.95, mem 1.48 -> 1.18, hybrid 1.20 -> 0.89 points). End-trimming 5 bp reduces it further.
+
+## Significance: paired bootstrap, not eyeballing
+
+Differences here are 0.1-0.3 points against an unpaired SE of ~0.24 points, so the ordering cannot
+be read off the table. All strategies see the same reads, so the comparison is paired and the het
+SITE is the resampling unit (`bootstrap_bias.py`, B = 2000 over 10,804 sites):
+
+| config | hybrid - aln | hybrid - mem9 | aln - mem9 |
+| --- | --- | --- | --- |
+| no filter | **-0.00116** sig | **-0.00287** sig | **-0.00171** sig |
+| MAPQ>=25 | -0.00063 **ns** | **-0.00292** sig | **-0.00228** sig |
+| MAPQ>=25 trim5 | **-0.00123** sig | **-0.00312** sig | **-0.00189** sig |
+
+- **aln has significantly less reference bias than mem in all three configurations.**
+- **The hybrid has significantly less bias than mem in all three.**
+- The hybrid's edge over all-aln is small (~0.1 points) and significant in 2 of 3 configurations --
+  worth stating as "at least as good as aln", not as a win. On first inspection the hybrid looked
+  lowest everywhere; the bootstrap showed one of those orderings is noise.
+
+## `-k 19 -r 2.5` does nothing; `-L 15` does all the work
+
+Decomposing the mem options (1.5 M reads):
+
+| options | accuracy % | bias (MAPQ>=25) |
+| --- | --- | --- |
+| `mem` default | 87.764 | +0.01342 |
+| `mem -L 15` | **87.891** | **+0.01188** |
+| `mem -k 19 -r 2.5 -L 15` | 87.882 | +0.01181 |
+| `mem -k 19 -r 2.5` | 87.669 (300k set) | — |
+
+`-k 19` **is bwa mem's own default**, so BWA9's `-k 19` is a no-op; `-r 2.5` (against a default of
+1.5) moves accuracy by -0.009 and bias by 0.0001 -- nothing. Adding `-L 15` is worth **+0.13
+accuracy points and 0.15 bias points**.
+
+So the DNAharvester-inherited `-k 19 -r 2.5` in `MEM_OPTS` can be dropped with no measurable loss,
+and `-L 15` is the part worth keeping. This also explains why Oliva et al.'s follow-up claim about
+BWA9 is so weak in our hands: the parameters it turns on barely do anything.
