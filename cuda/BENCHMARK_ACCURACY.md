@@ -295,3 +295,25 @@ workload.
 mem's `-L` is the single option that mattered (+0.13 accuracy, 0.15 bias points). minibwa's
 alignment options are `-A -B -O -E -s` with **no clipping penalty at all**, so that lever is simply
 unavailable there. Worth knowing before adopting it for aDNA.
+
+## Validated on bwa-mem3, and applied to the production pipeline
+
+The benchmark above used `bwa mem` 0.7.19, but `adna_aligner.sh -a mem3` runs **bwa-mem3** with an
+extra flag (`--supp-rep-hard-cap 5`). Re-ran the decomposition on the actual production binary and
+flag, same 1.5 M reads:
+
+| variant | mapped % | precision % | accuracy % | bias (tv, MAPQ>=25) |
+| --- | --- | --- | --- | --- |
+| mem3 `-k19 -r2.5 -L15 --supp-rep-hard-cap 5` | 92.912 | 94.586 | 87.882 | +0.01181 |
+| mem3 `-L15 --supp-rep-hard-cap 5` | 92.913 | 94.595 | **87.891** | +0.01188 |
+| bwa mem `-k19 -r2.5 -L15` (reference) | 92.912 | 94.586 | 87.882 | +0.01181 |
+
+bwa-mem3 reproduces bwa mem to three decimals, and `--supp-rep-hard-cap 5` changes nothing on
+single-end data. Dropping `-k 19 -r 2.5` gains +0.009 accuracy points; the bias difference is
+**-0.00008, 95% CI [-0.00034, +0.00018] -- not significant** by paired bootstrap. So the change is
+accuracy-neutral-to-marginally-positive and bias-neutral.
+
+**Applied** to `/home/dnastorage/aDNApipeline/adna_aligner.sh` on 2026-10-14:
+`MEM_OPTS="-k 19 -r 2.5 -L 15"` -> `MEM_OPTS="-L 15"`, with the two help-text defaults and the now
+-stale fq2bam comments updated to match (fq2bam's `--bwa-options` never accepted `-k`/`-r`, so it
+no longer has to drop anything). Timestamped backup alongside the script.
