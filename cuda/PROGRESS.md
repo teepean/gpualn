@@ -1859,3 +1859,27 @@ accuracy rises monotonically with cutoff and all-aln wins by 0.78 points.
 
 Their published code does not run: an R parse error, a Python tab/space SyntaxError, and a 1000G VCF
 filename that no longer exists. Full detail, caveats and the harness in `cuda/tools/benchmark/`.
+
+## Phase 32 — bwa-mem3 v0.14.1: 2x faster at byte-identical output; `--fast` rejected
+
+The pipeline's long arm ran bwa-mem3 `0.2.1` (May 2026). Upstream had moved **407 commits / 15
+releases**. Re-ran the whole accuracy decomposition on **v0.14.1** rather than trusting the
+changelog's byte-identity claims, because several landed changes do move alignments by design
+(v0.12.0 #489 chain-weight filter, v0.13.0 contained-seed extension skip, `--max-extend-chains`).
+
+**Verdict: upgrade is free.** Accuracy 87.891 and bias +0.01188, both *identical* to 0.2.1, and the
+alignment records are **byte-identical** (`cmp`, `@PG` excluded) on three deliberately different
+inputs: 1.5 M simulated aDNA, 100 k real soil aDNA where 0.5% maps, 200 k real 150 bp human where
+99.9% maps and supplementary records appear. Speed: **2.0x end-to-end over 0.2.1, 4.4x over `bwa
+mem`**; a third of that is index load alone (2.20 s -> 0.72 s), which is paid once per sample.
+
+`--compat=bwa-mem` checks out exactly -- byte-identical to `/usr/bin/bwa mem -L 15` over 1.5 M
+reads. The default path differs from it only by an added `HN:i:` tag.
+
+**REJECTED: `--fast`.** 1.4x faster, but -0.197 accuracy points and +0.00299 reference bias
+(significant, paired bootstrap, 95% CI [-0.00391, -0.00207]). It hands back a fifth of the margin
+the Phase 31 benchmark exists to protect. Upstream labels it NOT byte-identical and is right to.
+
+Methodological note, continuing the Phase 24/25/27 pattern: the two things that could have been
+assumed here -- "a perf-only release cannot change output" and "a preset called `--fast` only trades
+speed" -- are exactly the two the measurement settled, and they came out opposite ways.

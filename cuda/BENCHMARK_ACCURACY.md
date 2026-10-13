@@ -298,9 +298,9 @@ unavailable there. Worth knowing before adopting it for aDNA.
 
 ## Validated on bwa-mem3, and applied to the production pipeline
 
-The benchmark above used `bwa mem` 0.7.19, but `adna_aligner.sh -a mem3` runs **bwa-mem3** with an
-extra flag (`--supp-rep-hard-cap 5`). Re-ran the decomposition on the actual production binary and
-flag, same 1.5 M reads:
+The benchmark above used `bwa mem` 0.7.18-r1243 -- `/usr/bin/bwa`, what the `-a mem` path runs --
+but `adna_aligner.sh -a mem3` runs **bwa-mem3** with an extra flag (`--supp-rep-hard-cap 5`).
+Re-ran the decomposition on the actual production binary and flag, same 1.5 M reads:
 
 | variant | mapped % | precision % | accuracy % | bias (tv, MAPQ>=25) |
 | --- | --- | --- | --- | --- |
@@ -317,3 +317,76 @@ accuracy-neutral-to-marginally-positive and bias-neutral.
 `MEM_OPTS="-k 19 -r 2.5 -L 15"` -> `MEM_OPTS="-L 15"`, with the two help-text defaults and the now
 -stale fq2bam comments updated to match (fq2bam's `--bwa-options` never accepted `-k`/`-r`, so it
 no longer has to drop anything). Timestamped backup alongside the script.
+
+## bwa-mem3 v0.14.1: 2x faster, byte-identical output
+
+The production binary was `0.2.1-a24de32` (built 2026-05-20). Upstream has moved 407 commits and 15
+releases since, so the whole decomposition was re-run on **v0.14.1** (2026-10-11). The question is
+not "is the new one faster" -- it is **"does any of that development change an alignment"**, because
+accuracy is the deciding factor here and a 2x speedup that moves a single base is not a speedup.
+
+### Accuracy and bias, same 1.5 M reads, same options
+
+| variant | mapped % | precision % | accuracy % | bias (tv, MAPQ>=25) |
+| --- | --- | --- | --- | --- |
+| 0.2.1 `-L 15 --supp-rep-hard-cap 5` | 92.913 | 94.595 | **87.891** | +0.01188 |
+| **v0.14.1 `-L 15 --supp-rep-hard-cap 5`** | 92.913 | 94.595 | **87.891** | +0.01188 |
+| v0.14.1 `--compat=bwa-mem -L 15` | 92.913 | 94.595 | **87.891** | +0.01188 |
+| v0.14.1 `--fast -L 15 --supp-rep-hard-cap 5` | 92.899 | 94.398 | 87.694 | +0.01487 |
+
+### Byte-identity, verified on three independent inputs
+
+`cmp` of the alignment records (`@PG` excluded -- it embeds argv) between 0.2.1 and v0.14.1 at the
+production option set:
+
+| input | reads | mapped | result |
+| --- | --- | --- | --- |
+| `sim15M.fq` simulated damaged aDNA, 20-169 bp | 1,500,000 | 92.9% | **byte-identical** |
+| `test_data/sub100k.fq` real aDNA (atacama soil), 30-91 bp | 100,000 | 0.5% | **byte-identical** |
+| `HRR1274614_f1` real human, 150 bp | 200,000 | 99.9% | **byte-identical** |
+
+Three regimes on purpose: the simulated set for the damage/length profile, the soil sample because
+almost everything is unmapped there, and the 150 bp human set because almost everything maps and it
+is the only one of the three that produces supplementary records.
+
+`--compat=bwa-mem` is also exactly what it claims: its records are **byte-identical to
+`/usr/bin/bwa mem -L 15`** over all 1.5 M reads. The default path differs from `--compat` only by an
+added `HN:i:` tag (1,393,697 records); POS, MAPQ, CIGAR and NM are untouched, which is why all three
+rows above score the same. v0.12.0's chain-weight-filter change (#489) moved the *default* path onto
+bwa-mem's "leave it unmapped" behaviour, so `--compat=bwa-mem` is now a no-op for mapping on this
+workload and only `--compat=bwa-mem2` resurrects those alignments.
+
+### Speed, 1.5 M reads, 16 threads, best of 3 (all within 1.5%)
+
+| binary | wall | index load | mapping only |
+| --- | --- | --- | --- |
+| `bwa` 0.7.18-r1243 | 13.33 s | 0.40 s | 12.93 s |
+| bwa-mem3 0.2.1 | 6.01 s | 2.20 s | 3.84 s |
+| **bwa-mem3 v0.14.1** | **3.02 s** | **0.72 s** | **2.31 s** |
+| bwa-mem3 v0.14.1 `--fast` | 2.16 s | 0.72 s | 1.44 s |
+
+**2.0x end-to-end over 0.2.1 and 4.4x over `bwa mem`, at byte-identical output.** Note where a third
+of the gain comes from: **index load dropped 2.20 s -> 0.72 s** (3.1x). That is per invocation, and
+`adna_aligner.sh` invokes the aligner once per sample, so it is a real saving on short libraries
+rather than a benchmark artifact.
+
+### `--fast` is rejected
+
+v0.12.0 added a `--fast` preset (`--max-extend-chains 20 --adaptive-band --extend-tie-frac 0.95`
+...), honestly documented upstream as NOT byte-identical. It costs **0.197 accuracy points** and
+**+0.00299 reference bias**, the latter significant by paired bootstrap over 10,904 het sites:
+`v0.14.1 - v0.14.1 --fast = -0.00299`, 95% CI `[-0.00391, -0.00207]`. For 1.4x it gives back a fifth
+of the 1.0-point margin this project spent the whole benchmark establishing. Not worth it here.
+Useful to know it is available for a throughput-bound, non-population-genetic workload.
+
+### The upgrade is drop-in
+
+- **No index rebuild needed** -- v0.14.1 reads the existing hs37d5 index as-is (verified).
+- `index --max-memory` (the flag `adna_aligner.sh:217` passes) still exists.
+- Both index call sites in the script stay correct: it builds the classic `bwa` index
+  unconditionally for the `bwa aln` short arm, and the mem3 index only for `-a mem3`.
+- `BWA_MEM3` is already an overridable env var (`adna_aligner.sh:51`), so switching is one path.
+- One difference if the mem3 index is ever *rebuilt*: v0.14.1 no longer writes `.0123` by default
+  (`--emit-unpacked-ref` is now opt-in) and does not need it to map. That saves 5.8 GB for hs37d5.
+  Nothing in the pipeline reads `.0123` -- fq2bam uses the classic `bwa` index -- so this is safe,
+  but do not "fix" a missing `.0123` after a rebuild.
