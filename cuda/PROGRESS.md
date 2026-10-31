@@ -1377,6 +1377,11 @@ Consequences:
 3. Switching to `-t 32` for the 1.36x is safe *in the same sense bwa itself is* -- but it will
    change the `.sai` by a byte or so versus a `-t 16` golden. Regenerate goldens if you switch.
 
+**RESOLVED in Phase 33:** the mechanism is the `.sai` HEADER, not the `w` buffer. `bwtaln.c:179`
+writes the whole `gap_opt_t` (64 bytes), which contains `n_threads` at offset 52. `cmp -l` on
+sub2k `-t 2` vs `-t 4` shows exactly one byte, offset 57, values 2 and 4; past the 68-byte header
+the files are identical. So consequence 3 overstated it: `-t 32` changes no alignment record.
+
 Validated at `-t 16`: sub2k `4b068014` and sub100k `eecf35c1` for batch = 1/2/4/8, `bwa gpualn`
 with scheme+batch `eecf35c1`, CPU `bwa aln` `eecf35c1`, dfstest false_neg=0.
 
@@ -1883,3 +1888,31 @@ the Phase 31 benchmark exists to protect. Upstream labels it NOT byte-identical 
 Methodological note, continuing the Phase 24/25/27 pattern: the two things that could have been
 assumed here -- "a perf-only release cannot change output" and "a preset called `--fast` only trades
 speed" -- are exactly the two the measurement settled, and they came out opposite ways.
+
+## Phase 33 — G-ALN: an independent GPU `bwa aln` that solved our reconcile floor (analysis only)
+
+G-ALN (Dalén group, bioRxiv 2026.10.18.759956, GPL-3.0) appeared 2026-10-16: GPU `bwa aln` +
+`index`, byte-identical to BWA 0.7.19, for palaeogenomics. Read from source only -- the GPU was
+reserved, so **nothing was run on it**. Full analysis and a test plan: `GALN_COMPARISON.md`.
+
+**The decisive difference:** gpualn's GPU proves *existence* and the CPU re-aligns every hit;
+G-ALN's GPU runs a line-by-line port of `bwt_match_gap` and emits the final alignments, the CPU
+taking only overflow. That is precisely the lever Phase 15 named and nobody pulled -- the reconcile
+was 98.9% of the short stage on high-endogenous data, and every kernel phase since has optimised the
+other 1.1%. gpualn's scheme engine is likely still ahead on **low**-endogenous libraries (Phase 15's
+rule: its gain scales with the non-mapping fraction). Both expectations are unmeasured.
+
+**It contradicts the June "warp-cooperative is a dead end" note, but not its data.** That note tested
+*tree-parallel* collect behind a `c1>1` gate that sent big trees to the CPU. G-ALN's warp engine
+runs the scalar search redundantly in lockstep on all 32 lanes -- so no idle lanes -- splits only
+the two occ block loads between lane halves, and is routed TO the high-effort reads. It needs no
+`c1` gate because the port preserves pop/push order exactly.
+
+**Not new:** its CPU interleave (`aln_il.h`, 8 reads/core) is our Phase 20 batched reconcile,
+already measured at 1.10x (16 t) / 1.02x (32 t).
+
+**Headline caveat:** its 6.3x is a 4x GH200 node vs a 256-core node, with the GPU node's Grace cores
+also searching by default; no `--gpu-only` timing or per-GPU figure is given.
+
+**Side result, verified:** Phase 20's unexplained `-t` dependence of the `.sai` is the header --
+`gap_opt_t.n_threads` at byte 57. Alignment records are thread-count invariant; Phase 20 annotated.
