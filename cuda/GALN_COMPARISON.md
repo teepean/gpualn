@@ -114,6 +114,46 @@ compared past it -- `cmp <(tail -c +69 a.sai) <(tail -c +69 b.sai)`, verified id
 `-t 2` / `-t 4` pair -- or regenerated. G-ALN solves the same thing with `-dt` (dummy threads: it
 sets only the header value).
 
+## Provenance: did G-ALN build on gpualn? (checked 2026-10-31)
+
+**No sign that it did.** The question arises because both were written with Claude models and
+gpualn was public first:
+
+| date | event |
+| --- | --- |
+| 2026-06-01 | `cuda-port` branch created on public `teepean/bwa` |
+| 2026-06-10 | `0f19581` pushed: faithful best-first GPU prototype + generation scoping doc |
+| 2026-08-21 | `teepean/gpualn` created, public |
+| 2026-10-16 | G-ALN's first public commit -- one squashed import of v0.2.1; its history is not public |
+| 2026-10-21 | G-ALN preprint posted |
+
+So the timeline allows it. The code does not show it:
+
+- **Shared text.** Every non-trivial line (>= 30 chars) of G-ALN's own source (29 files;
+  `bwa_upstream/` and `third_party/` excluded) against all 71 C/CUDA files in this repo, minus every
+  line of upstream bwa 0.7.19 (`cuda/tools/shared_code.py`): **7 lines in common** -- four lines of
+  generic CUDA/C boilerplate, a stock `CK` error-check macro that both codebases spell more than one
+  way, and two mechanical ports of bwa's own code (`cntl[i] = cntk[i]` is bwa's `memcpy` in
+  `bwt_2occ4` unrolled; `primary; /* S^{-1}(0) */` is bwa's `bwt.h` comment). No gpualn identifier
+  appears (`SNode`, `CAP_SM`, `d_scheme_has_hit`, `sch_validate`, `gap_run_*`, ...).
+- **Shared design: none distinctive.** gpualn's defining parts -- the superset filter with CPU
+  reconcile, search schemes on the bidirectional index, shared-memory stacks, the `c1>1` gate -- are
+  absent from G-ALN. G-ALN's -- the lockstep warp engine, 16 B chunked buckets, the two-ended list,
+  the FNV pop-trace hash -- are absent from gpualn, including from the June prototype (a toy with
+  its own suffix-array builder and `uint32` index, fixed per-bin arrays, and a collect-and-sort warp
+  kernel). The one idea in both, batched CPU search with prefetch, is QuadRank-style batching that
+  Phase 16 itself took from the literature, and is structured differently (our prefetch-then-step
+  `gap_run_*` vs their A/B halves split at the occ lookup).
+- **The preprint** credits BarraCUDA as the earlier GPU port of bwa aln and does not mention
+  gpualn, search schemes, or any other GPU bwa-aln (its reference entries 15-22 were not visible).
+- Its README's explanation of the `.sai` `-t` byte is right where our public Phase 20 was wrong;
+  working from our notes would have imported the wrong theory.
+
+Limits: this rules out reuse of code and design, not that anyone ever looked at the repository.
+And since both were written with Claude on the same upstream code, shared idiom (the `CK` macro,
+"byte-identical") is expected even with no contact at all -- only distinctive design would mean
+anything, and there is none.
+
 ## Test plan, for when the GPU is free
 
 G-ALN reads the standard bwa index files, so the existing hs37d5 index works as-is.
