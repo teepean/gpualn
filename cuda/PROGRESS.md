@@ -9,6 +9,10 @@ Goal: massively speed up `bwa aln` (BWA-backtrack) for ancient DNA, producing a 
 - Index: `/home/dnastorage/aDNApipeline/hs37d5.fa` (.bwt 3.14 GB; .sa NOT needed on GPU).
 - Subsets: `sub10k.fq`, `sub100k.fq` (deterministic heads), `strided20k.fq` (representative).
 - Golden CPU `.sai` for sub10k: md5 `54410c755509b8389ae992953dd3476c`.
+- Phase 34 sets: `p17_shuf1m.fq` (1 M reads, 94.4% mapped) and `p1_shuf1m.fq` (1 M, 0.2% mapped),
+  random subsamples of `/home/dnastorage/aDNApipeline/p{17,1}/p*.short.bam`, shuffled with
+  `random.Random(42)`; `p17s_hit.fq`/`p17s_nohit.fq` are p17 split by bwa's hits, `p17s_100k.fq` its
+  head. The `*_rand1m.fq` files hold the same reads but are NOT shuffled (largely coordinate order).
 
 ## Phase 0 — baseline & profiling — DONE
 Instrumented `bwt_match_gap` (`#ifdef ALN_PROFILE` in `bwtgap.c`; build `bwa-prof`). Verified
@@ -1916,3 +1920,44 @@ also searching by default; no `--gpu-only` timing or per-GPU figure is given.
 
 **Side result, verified:** Phase 20's unexplained `-t` dependence of the `.sai` is the header --
 `gap_opt_t.n_threads` at byte 57. Alignment records are thread-count invariant; Phase 20 annotated.
+
+## Phase 34 — G-ALN measured; gpualn's scheme engine as G-ALN's prefilter (2.1-7.9x, byte-identical)
+
+First runs of G-ALN (RTX 3090 + Ryzen 9 9950X, hs37d5, `-l 1024 -n 0.01 -o 2`, all 32 threads,
+every run byte-identical to stock `bwa aln`). Full tables: `GALN_COMPARISON.md`.
+
+| | sub100k (0.5% mapped) | p17 1M (94.4%) | p1 1M (0.2%) |
+| --- | --- | --- | --- |
+| `bwa aln -t 32` | 15.3 s | 56.1 s | 149.1 s |
+| gpualn | 2.22 s | 17.4 s | 7.77 s |
+| G-ALN 0.2.4 | 7.03 s | 19.9 s | 55.2 s |
+| G-ALN + scheme prefilter | **1.97 s** | **9.63 s** | **6.95 s** |
+
+**gpualn beat G-ALN on all three, including the 94%-endogenous library** -- Phase 33's "G-ALN wins
+on high-endogenous" was wrong. Splitting p17 by bwa's hits explains it: the 5.6% of reads that do not
+map take 73% of bwa's time (41.4 s vs 15.4 s) and 73% of G-ALN's (16.7 s vs 6.2 s); per read an
+unmapped read costs ~45x a mapped one. G-ALN is strong on the mapped half (6.2 s against gpualn's
+15.9 s of CPU reconcile), gpualn on the unmapped half (4.0 s against 16.7 s).
+
+**So the two were combined:** `scheme_engine.cuh` ported into G-ALN as a prefilter
+(`src/prefilter.cuh`, ~550 lines, + ~85 in `galn.cu`) that proves "no alignment" before G-ALN's light
+tier; everything else goes through G-ALN unchanged. Measured additions over the straight port:
+- an exact-occurrence check first (one thread per read): 84% of p17's mapped reads occur exactly,
+  and skipping their scheme search cut the filter's cost on mapped reads 1.65 s -> 0.54 s;
+- filtering only reads no longer than `-l`: with seeding on, G-ALN's exact search is already cheap
+  and the seed-blind filter made it slower (p1 at `-l 20`: 1.5 -> 6.3 s); gated, seeded runs are
+  unchanged, aDNA runs filter every read;
+- `GAPE` mode only (off with `-e`), an index-size guard (32-bit interval sizes), verdicts that start
+  as "maybe" on the device plus launch-error checks (a launch error does not surface in the stream
+  sync, and uninitialised memory could otherwise read as "no hit" -- caught in review, not by a test).
+
+Verified: goldens; sub100k/p17/p1 in default and `--gpu-only`; an option matrix of 15 bwa option sets
+x 2 libraries, 30/30 identical on both the 0.2.4 and 0.2.7 builds (`cuda/tools/optmatrix_galn.sh`);
+`--verify` re-ran all 1,143,091 filtered reads on the CPU, 0 with an alignment. Worst case (every
+read maps): +10%. Prepared as a PR against G-ALN `dev-0.2.7` (local branch `scheme-prefilter-027`,
+patch in `cuda/patches/`), **not submitted** -- outward-facing, waiting for the go-ahead.
+
+Also found: G-ALN 0.2.7's `load_bwt` ends with `POSIX_FADV_DONTNEED`, so every run (and the next
+bwa/samse run) re-reads the 3.1 GB index from disk on a workstation (load 0.2 s -> 5.7 s); and
+`shuf --random-source=<(yes 42)` does not shuffle (see Test assets).
+
