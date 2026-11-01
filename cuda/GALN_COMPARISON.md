@@ -2,11 +2,12 @@
 
 **Status: measured 2026-11-01** (RTX 3090 + Ryzen 9 9950X; sections "Measured head-to-head" onward).
 The sections before them are the 2026-10-31 source analysis, unchanged except where marked.
+**Submitted the same day:** the prefilter as <https://github.com/bilalbioinfo/galn/pull/3>, the
+page-cache problem as <https://github.com/bilalbioinfo/galn/issues/2>.
 
 **Bottom line:** on our box gpualn beats G-ALN 0.2.4 on all three libraries we tried, including a
 94%-endogenous one, and G-ALN with gpualn's scheme engine as a prefilter beats both on all three
-(2.1-7.9x over G-ALN). The combination is prepared as a pull request for G-ALN (local branch, not yet
-submitted; see the end).
+(2.1-7.9x over G-ALN). The combination is submitted to G-ALN as a pull request (see the end).
 
 G-ALN (<https://github.com/bilalbioinfo/galn>, GPL-3.0, v0.2.4) is a GPU `bwa aln` + `bwa index`
 with byte-identical output to BWA 0.7.19, from the Dalén group (Centre for Palaeogenetics):
@@ -262,11 +263,16 @@ is a larger piece of code, and on sub100k the long reads cost G-ALN only ~0.4 s.
 
 ## Found along the way
 
-- **G-ALN 0.2.7 drops the index from the page cache.** `load_bwt` now ends with
+- **G-ALN drops the index from the page cache** (since 0.2.6, commit `8990221`; reported as
+  [#2](https://github.com/bilalbioinfo/galn/issues/2)). `load_bwt` ends with
   `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)` ("no page-cache copy"), presumably for GH200 memory.
-  On a workstation every run then re-reads the 3.1 GB `.bwt` from disk -- load 0.2 s -> 5.7 s here --
-  and so does whatever runs next (bwa, samse, gpualn): in the 0.2.7 option matrix, stock `bwa aln`
-  calls that took 0.4 s took 6 s. Worth reporting to them; not part of the prefilter PR.
+  So every run re-reads the 3.1 GB `.bwt` from disk (a SATA SSD here), and so does whatever runs next
+  on the same index (bwa, `galn samse`/`sampe` via `load_bwt_sa`, gpualn). Controlled check
+  (`cuda/tools/galn_pagecache.sh`, sub2k, 0.2.7): load 0.22 s on a warmed cache, then 5.81 and
+  5.80 s, with `fincore` showing 0 B of the `.bwt` cached after every run. The same binary with
+  `posix_fadvise` made a no-op (`LD_PRELOAD`, `cuda/tools/nofadvise.c`) loads in 0.20 s every run and
+  the index stays cached; identical `.sai` either way. `bwa aln -t 32` on sub2k: 0.6 s on a warm
+  cache, 6.3 s right after a `galn aln` run.
 - **`shuf --random-source=<(yes 42)` does not shuffle.** A constant random source left
   `p17_rand1m.fq` largely in coordinate order (first tenth 100% mapped, last tenth 84.7%), which
   hid every unmapped read from a 100 k head slice. The `*_rand1m.fq` files are kept but are NOT
@@ -280,6 +286,8 @@ is a larger piece of code, and on sub100k the long reads cost G-ALN only ~0.4 s.
 ## Decision
 
 - **The prefilter belongs in G-ALN** -- it is the published, maintained tool for this community,
-  and the combination beats both. Prepared as a PR against their `dev-0.2.7`, waiting for the go-ahead.
+  and the combination beats both. Submitted 2026-11-01 as
+  [#3](https://github.com/bilalbioinfo/galn/pull/3) against their `dev-0.2.7` (fork `teepean/galn`,
+  branch `scheme-prefilter-027`, commit `b43ed28` = `cuda/patches/galn-0.2.7-scheme-prefilter.patch`).
 - **Pipeline short arm:** gpualn stays until the prefilter is in a G-ALN release (gpualn is faster
   than stock G-ALN on every library we tried); then switch to G-ALN, after a pipeline-level check.

@@ -1954,10 +1954,13 @@ tier; everything else goes through G-ALN unchanged. Measured additions over the 
 Verified: goldens; sub100k/p17/p1 in default and `--gpu-only`; an option matrix of 15 bwa option sets
 x 2 libraries, 30/30 identical on both the 0.2.4 and 0.2.7 builds (`cuda/tools/optmatrix_galn.sh`);
 `--verify` re-ran all 1,143,091 filtered reads on the CPU, 0 with an alignment. Worst case (every
-read maps): +10%. Prepared as a PR against G-ALN `dev-0.2.7` (local branch `scheme-prefilter-027`,
-patch in `cuda/patches/`), **not submitted** -- outward-facing, waiting for the go-ahead.
+read maps): +10%. Submitted 2026-11-01 as <https://github.com/bilalbioinfo/galn/pull/3> against
+G-ALN `dev-0.2.7` (fork `teepean/galn`, branch `scheme-prefilter-027`, commit `b43ed28`; the same
+commit as the patch in `cuda/patches/`).
 
-Also found: G-ALN 0.2.7's `load_bwt` ends with `POSIX_FADV_DONTNEED`, so every run (and the next
-bwa/samse run) re-reads the 3.1 GB index from disk on a workstation (load 0.2 s -> 5.7 s); and
-`shuf --random-source=<(yes 42)` does not shuffle (see Test assets).
+Also found: G-ALN's `load_bwt` (since 0.2.6) ends with `POSIX_FADV_DONTNEED`, so every run, and the
+next bwa/samse run on the same index, re-reads the 3.1 GB index from disk (load 0.2 s -> 5.8 s; with
+the call made a no-op via `LD_PRELOAD`, 0.2 s every run: `cuda/tools/galn_pagecache.sh`). Reported
+as <https://github.com/bilalbioinfo/galn/issues/2>. And `shuf --random-source=<(yes 42)` does not
+shuffle (see Test assets).
 
