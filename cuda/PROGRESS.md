@@ -1964,3 +1964,11 @@ the call made a no-op via `LD_PRELOAD`, 0.2 s every run: `cuda/tools/galn_pageca
 as <https://github.com/bilalbioinfo/galn/issues/2>. And `shuf --random-source=<(yes 42)` does not
 shuffle (see Test assets).
 
+2026-11-06: the maintainers fixed #2 (`79f951f`: the cache is kept unless `GALN_DROP_BWT_CACHE=1`;
+their memory budget now counts inactive file pages as free) and released v0.2.7 with it. Confirmed
+here on the CPU path (GPU held by vLLM): 0.20 s load every run, `.bwt` stays cached. The release
+merged `dev-0.2.7` into `main`, leaving #3 with a CHANGELOG conflict; rebased locally as `3a2fe79`
+(same code lines), push and retarget to `main` pending. Still to do when the GPU is free: re-test the
+rebased build, silence nvcc's #550-D "set but never used" warnings (the counting pass of `PF_CH` in
+`prefilter.cuh` ignores its arguments), and refresh the PR's timings against the 0.2.7 release.
+

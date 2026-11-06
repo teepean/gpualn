@@ -4,6 +4,8 @@
 The sections before them are the 2026-10-31 source analysis, unchanged except where marked.
 **Submitted the same day:** the prefilter as <https://github.com/bilalbioinfo/galn/pull/3>, the
 page-cache problem as <https://github.com/bilalbioinfo/galn/issues/2>.
+**2026-11-06:** #2 fixed upstream and released in v0.2.7 (confirmed here). The release left #3 with a
+CHANGELOG conflict; rebased locally, see the end.
 
 **Bottom line:** on our box gpualn beats G-ALN 0.2.4 on all three libraries we tried, including a
 94%-endogenous one, and G-ALN with gpualn's scheme engine as a prefilter beats both on all three
@@ -273,6 +275,13 @@ is a larger piece of code, and on sub100k the long reads cost G-ALN only ~0.4 s.
   `posix_fadvise` made a no-op (`LD_PRELOAD`, `cuda/tools/nofadvise.c`) loads in 0.20 s every run and
   the index stays cached; identical `.sai` either way. `bwa aln -t 32` on sub2k: 0.6 s on a warm
   cache, 6.3 s right after a `galn aln` run.
+  **Fixed in the 0.2.7 release** (`79f951f`, 2026-11-06): `load_bwt` keeps the cache unless
+  `GALN_DROP_BWT_CACHE=1`, and the memory budget now counts the cgroup's inactive file pages as free
+  (the call's reason, per the maintainer: the budget counted the job's page cache as used memory).
+  Confirmed here with `EXTRA=--cpu-only` (GPU held by vLLM; `load_bwt` is the same path): 0.20-0.21 s
+  every run, the `.bwt` stays cached, `bwa aln` right after a run 0.66 s; `GALN_DROP_BWT_CACHE=1`
+  still evicts. Their budget counts only *inactive* file pages as free; on this kernel (7.3, MGLRU) a
+  re-read file stays inactive (2 GiB file read 3x in a fresh cgroup), so repeated runs keep the gain.
 - **`shuf --random-source=<(yes 42)` does not shuffle.** A constant random source left
   `p17_rand1m.fq` largely in coordinate order (first tenth 100% mapped, last tenth 84.7%), which
   hid every unmapped read from a 100 k head slice. The `*_rand1m.fq` files are kept but are NOT
@@ -289,5 +298,8 @@ is a larger piece of code, and on sub100k the long reads cost G-ALN only ~0.4 s.
   and the combination beats both. Submitted 2026-11-01 as
   [#3](https://github.com/bilalbioinfo/galn/pull/3) against their `dev-0.2.7` (fork `teepean/galn`,
   branch `scheme-prefilter-027`, commit `b43ed28` = `cuda/patches/galn-0.2.7-scheme-prefilter.patch`).
+  On 2026-11-06 `dev-0.2.7` was merged into `main` and released as v0.2.7, leaving #3 with a conflict
+  in the CHANGELOG heading only. Rebased locally as `3a2fe79` (the same code lines; builds). Pushing
+  it and retargeting #3 to `main` wait for the go-ahead; the GPU re-test waits for a free GPU.
 - **Pipeline short arm:** gpualn stays until the prefilter is in a G-ALN release (gpualn is faster
   than stock G-ALN on every library we tried); then switch to G-ALN, after a pipeline-level check.
