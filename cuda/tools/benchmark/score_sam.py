@@ -3,9 +3,12 @@
 
 QNAME = r<idx>:<chrom>:<true 1-based leftmost ref pos>:<strand>:<len>:<hap>
 
-A read counts as CORRECT when it is mapped, lands on the true chromosome, and |POS - true| <= tol.
-POS is SAM's leftmost reference coordinate, which is what the simulator encodes, so no
-strand-dependent or clipping-dependent correction is needed.
+A read counts as CORRECT when it is mapped, lands on the true chromosome, and |start - true| <= tol,
+where start is POS minus any leading soft/hard clip (the unclipped start). The simulator encodes the
+fragment's leftmost reference coordinate, which equals POS for an end-to-end alignment on either
+strand; local aligners (strobealign, mem without -L) can clip a damaged or mismatching end, which
+moves POS without the read being misplaced. --raw-pos compares POS itself (the behaviour before
+2026-11-15, under which a clipped read was always wrong).
 
 Reports, overall and per length bin: mapped fraction (sensitivity), precision (correct/mapped) and
 accuracy (correct/total), optionally after a MAPQ filter. Secondary alignments and supplementary
@@ -14,6 +17,22 @@ records are ignored; only the primary record of each read is scored.
 import argparse, sys
 from collections import defaultdict
 
+def lead_clip(cig):
+    """Length of the leading S/H operations of a CIGAR string."""
+    n = c = 0
+    for ch in cig:
+        if ch.isdigit():
+            n = n * 10 + int(ch)
+        elif ch in 'SH':
+            c += n; n = 0
+        else:
+            break
+    return c
+
+def start_of(f, raw):
+    """Unclipped 1-based leftmost reference coordinate of a split SAM record."""
+    return int(f[3]) if raw else int(f[3]) - lead_clip(f[5])
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('sam')
@@ -21,6 +40,7 @@ def main():
     ap.add_argument('--mapq', type=int, default=0, help='discard alignments below this MAPQ')
     ap.add_argument('--label', default='')
     ap.add_argument('--tsv', help='also append a machine-readable row per length bin here')
+    ap.add_argument('--raw-pos', action='store_true', help='compare POS, not the unclipped start')
     a = ap.parse_args()
 
     tot = defaultdict(int); mapped = defaultdict(int); corr = defaultdict(int)
@@ -41,7 +61,7 @@ def main():
         if int(f[4]) < a.mapq:
             continue
         mapped[b] += 1
-        if f[2] == true_chr and abs(int(f[3]) - true_pos) <= a.tol:
+        if f[2] == true_chr and abs(start_of(f, a.raw_pos) - true_pos) <= a.tol:
             corr[b] += 1
 
     T = sum(tot.values()); M = sum(mapped.values()); C = sum(corr.values())

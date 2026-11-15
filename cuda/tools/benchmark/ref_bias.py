@@ -56,6 +56,9 @@ def main():
     ap.add_argument('--mapq', type=int, default=0)
     ap.add_argument('--trim', type=int, default=0, help='ignore this many bases at each read end')
     ap.add_argument('--label', default='')
+    ap.add_argument('--chrom', default='22',
+                    help="chromosome the variants are on; records elsewhere are skipped "
+                         "(before 2026-11-15 they were counted at the same coordinate). '' = any")
     ap.add_argument('--dump', help='write per-site transversion ref/alt counts here (for bootstrap)')
     a = ap.parse_args()
 
@@ -95,6 +98,8 @@ def main():
             if flag & 0x904:                      # unmapped / secondary / supplementary
                 continue
             if int(f[4]) < a.mapq:
+                continue
+            if a.chrom and f[2] != a.chrom:
                 continue
             refpos, seq = int(f[3]), f[9]
             L = len(seq)

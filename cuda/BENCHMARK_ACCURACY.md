@@ -402,3 +402,167 @@ Two other scripts in that directory still hardcode the 0.2.1 path and were left 
 `paired_mem3.sh:14` (also single-end -- collapsed reads, no `-p` -- so the same verification covers
 it; note it runs `-k 19 -r 2.5` and no `-L 15`, an option set that predates the MEM_OPTS work) and
 `test_supp_rep_hard_cap.sh:24` (a test harness, where pinning the old binary is arguably correct).
+
+# strobealign-HRY: tested 2026-11-15, not adopted
+
+Tolstoganov & Sahlin, *Hybrid RY-mers increase aDNA alignment sensitivity* (bioRxiv
+10.64898/2026.11.05.764514, v2 2026-11-10) adds an aDNA mode to strobealign. Its seeds are k-mers
+whose first `--ry-len` (8) positions are hashed by purine/pyrimidine class only, so C>T / G>A damage
+near read ends no longer breaks the seed, while the rest of the k-mer stays nucleotide-exact. It
+claims higher accuracy than `bwa aln -n 0.01 -o 2 -l 1024` (the same options we use) at 4-6x its
+speed. Tested here as published: tag `hry` (`4be2dcc`, strobealign 0.18.0-alpha, Rust, `cargo build
+--release`) with the authors' settings from their benchmark repo (`adna_bench`,
+`simx/config/config.yaml`): `--adna --ry-len 8 -M 500 --ssw -k 17 -s 15`.
+
+## How their benchmark differs from this one
+
+| | the paper | here |
+| --- | --- | --- |
+| reads | 40 bp only (gargammel), 80% endogenous | 20-169 bp in 15 bins, all endogenous (+ real libraries for speed) |
+| divergence | 0.5 / 2 / 5% Mason substitutions + indels written into one haploid copy of fruit fly, Zymo, CHM13 | real NA19471 SNVs on chr22 (heterozygous and homozygous), mapped to hs37d5 |
+| "correct" | primary overlaps the true interval, and alignment score >= 60 under strobealign's scoring (bwa's recomputed from MD/CIGAR) | unclipped start == true start (a 100 bp tolerance changes accuracy by 0.03 points) |
+| MAPQ-filtered results | none | all tables at MAPQ>=0 and >=25, plus precision-matched |
+| reference bias | **not measured** -- their design has no heterozygous sites, so there is no allele balance to check | transversion bias at 10,811 het sites, paired bootstrap |
+
+Also seen in `adna_bench`: its `compile_strobealign` rule builds with plain `cargo build` (dev
+profile, `opt-level = 1`). If the paper's timings came from that rule, they understate HRY's speed;
+the speed numbers below use a release build.
+
+## Accuracy (1.5 M simulated reads, unclipped start)
+
+| strategy | mapped % | precision % | accuracy % | accuracy, MAPQ>=25 | best accuracy at precision >= 99.9% / 99.99% |
+| --- | --- | --- | --- | --- | --- |
+| **BWA1 `aln -l 1024 -n 0.01 -o 2`** | 99.962 | 93.370 | **93.334** | **86.731** | **89.836 / 86.731** |
+| bwa-mem3 v0.14.1 `-L 15` (pipeline long arm) | 92.913 | 94.595 | 87.891 | 81.827 | 84.405 / never reaches 99.99 |
+| **strobealign-HRY, paper settings** | 98.286 | 94.361 | **92.744** | **80.075** | **81.769 / 72.065** |
+| strobealign-DK, paper settings (`-l 1 -u 1 -M 500 -k 17 -s 15`) | 98.704 | 94.081 | 92.862 | 80.246 | |
+| strobealign, defaults (same binary) | 97.553 | 93.501 | 91.213 | 81.195 | |
+| strobealign-HRY, release default (`--adna` only) | 96.963 | 93.622 | 90.779 | 78.357 | |
+
+HRY with `-r 50` (the short-read profile; the set's estimated length is 94 bp) gave byte-identical
+records to the paper-settings run: with `-k`/`-s` fixed, the profile does not matter.
+
+Per length bin, accuracy % (MAPQ>=0 | MAPQ>=25):
+
+| bin | aln | mem3 | HRY | DK | strobealign | HRY - aln |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20-29 | **75.79** \| **56.70** | 0 \| 0 | 73.61 \| 46.57 | 72.48 \| 42.33 | 53.89 \| 46.21 | -2.18 \| -10.14 |
+| 30-39 | **83.96** \| **73.38** | 78.42 \| 69.14 | 83.20 \| 65.35 | 82.82 \| 64.21 | 79.53 \| 65.88 | -0.76 \| -8.03 |
+| 40-49 | **88.67** \| 78.85 | 88.43 \| **79.97** | 87.99 \| 72.98 | 88.24 \| 72.50 | 86.63 \| 72.16 | -0.69 \| -5.87 |
+| 50-59 | **91.99** \| **83.19** | 91.74 \| 81.49 | 91.19 \| 77.02 | 91.62 \| 77.00 | 90.84 \| 76.16 | -0.79 \| -6.17 |
+| 60-69 | **93.87** \| **86.49** | 93.84 \| 85.27 | 92.93 \| 79.62 | 93.49 \| 79.85 | 93.13 \| 79.10 | -0.93 \| -6.88 |
+| 70-99 | **95.09-96.17** \| **88.9-91.4** | within 0.1 \| 0.8-1.1 lower | 0.6-0.8 lower \| ~7 lower | | | -0.64..-0.82 \| ~-7.0 |
+| 100-169 | 96.5-97.4 \| **92.2-93.9** | +-0.15 \| 0.7-1.4 lower | -0.47..+0.04 \| 5.5-6.6 lower | | | -0.47..+0.04 \| -5.5..-6.6 |
+
+- **HRY is below `bwa aln` in 14 of 15 bins** (the 15th: +0.04 at 150-159 bp). In the paper's own
+  read length, 40-49 bp, it is 0.69 points below.
+- **At MAPQ>=25 it is 5.5-10 points below in every bin.** This is not MAPQ scale: at equal precision
+  aln keeps 89.8% vs HRY's 81.8% (99.9%) and 86.7% vs 72.1% (99.99%). There HRY is below `bwa mem`
+  too (84.4% at 99.9%).
+- **What the RY seeds do buy**: the shortest reads. At 20-29 bp HRY maps 73.6% correctly, against
+  53.9% for default strobealign and 0% for mem; vs the paper's own non-aDNA baseline DK the gain is
+  +1.1 points at 20-29 and +0.4 at 30-39, and DK is ahead from 40 bp on (overall 92.86 vs 92.74).
+- The paper's one non-win is also human: CHM13 at 2%, where bwa aln is 0.1 points ahead. Its
+  lowest divergence is 0.5%, about five times the SNV rate here, and its margins grow with
+  divergence -- a regime that matters for non-model and microbial references, not for human aDNA on
+  hs37d5.
+
+## Reference bias (transversions, MAPQ>=25; perfect-mapper control +0.00039)
+
+| strategy | bias | per bin 30-39 / 40-49 / 60-69 |
+| --- | --- | --- |
+| **aln** | **+0.00952** | +0.037 / +0.001 / +0.011 |
+| mem3 `-L 15` | +0.01188 | +0.198 / +0.028 / +0.018 |
+| **HRY** | **+0.01819** | +0.132 / +0.029 / +0.032 |
+| DK | +0.01769 | +0.130 / +0.035 / +0.032 |
+| strobealign default | +0.01977 | |
+
+At 20-29 bp (n ~ 220-400) HRY loses 42.5% of alt alleles (aln 8.5%). Paired bootstrap over 10,811
+het sites (B = 2000): `aln - HRY = -0.00867 [-0.01048, -0.00685]`, `HRY - mem3 = +0.00631
+[+0.00467, +0.00802]`, both significant. **HRY nearly doubles aln's reference bias and has more than
+mem**. From 50 to 89 bp it is 2-5x aln's and above mem3's, so it is not only the short-read score
+floor that hurts mem-family mappers. Hashing the first 8 seed positions by R/Y class tolerates
+transitions only; a transversion SNP breaks the seed exactly as in plain strobealign, and HRY's bias
+is close to DK's (+0.0182 vs +0.0177).
+
+## As either arm of the length-split hybrid (cutoff 64)
+
+| hybrid (short arm + long arm) | accuracy % | accuracy, MAPQ>=25 | bias, MAPQ>=25 |
+| --- | --- | --- | --- |
+| **aln + bwa-mem3 (production)** | **93.347** | **85.962** | **+0.00913** |
+| HRY + bwa-mem3 | 93.030 | 83.773 | +0.01397 |
+| aln + HRY | 93.061 | 82.264 | +0.01291 |
+
+At cutoff 40, HRY + mem3 is 93.117 / 84.679 vs 93.313 / 85.890. Bootstrap: `production - (HRY +
+mem3) = -0.00484 [-0.00556, -0.00414]`, `production - (aln + HRY) = -0.00378 [-0.00534, -0.00236]`,
+both significant. **The production hybrid wins whichever arm HRY replaces.** (The production bias
+here is +0.00913 rather than the +0.00889 measured with `mem -k 19 -r 2.5 -L 15` before the
+2026-10-14 MEM_OPTS change; the long arm is now what the pipeline runs.)
+
+## Real libraries: speed (strictly one run at a time, `-t 32`, page cache warm)
+
+| | sub100k | p17 1M | p1 1M |
+| --- | --- | --- | --- |
+| reads / mapped by bwa aln | 100,000 / 0.5% | 999,552 / 94.4% | 1,000,528 / 0.2% |
+| `bwa aln -t 32` (today; 2026-11-01: 15.3 / 56.1 / 149.1) | 15.40 s | 57.05 s | 138.69 s |
+| **strobealign-HRY, saved index** (median of 3) | **9.14 s** | **8.91 s** | **14.38 s** |
+| strobealign-HRY, index built in the run | 32.10 s | 28.93 s | 33.03 s |
+| gpualn (2026-11-01, GPU held today) | 2.22 s | 17.4 s | 7.77 s |
+| G-ALN + scheme prefilter (2026-11-01) | 1.97 s | 9.63 s | 6.95 s |
+| peak memory: bwa aln / HRY | 3.7 / 20.9 GB | 6.7 / 21.6 GB | 3.8 / 21.4 GB |
+
+HRY's index for hs37d5 takes 41.7 s and 23.4 GB to build and is 21.4 GB on disk (`.sti`); a saved
+run spends 2.2 s reading it and 3.8-9.2 s mapping. Saved-index and built-in-run outputs are
+byte-identical on all three libraries. So: **1.7x / 6.4x / 9.6x over CPU bwa aln**, consistent with
+the paper's 4-6x; **faster than gpualn on the 94%-endogenous p17 (8.9 vs 17.4 s), but 4.1x slower on
+sub100k and 1.9x slower on p1**, where gpualn's filter proves most reads unalignable. Against G-ALN +
+prefilter, HRY is slightly faster on p17 (8.9 vs 9.6 s) and slower on the other two.
+
+## Real libraries: HRY reports almost every read as mapped
+
+| | sub100k | p17 | p1 |
+| --- | --- | --- | --- |
+| bwa aln mapped / MAPQ>=25 | 0.51 / 0.21% | 94.42 / 68.96% | 0.20 / 0.14% |
+| HRY mapped / MAPQ>=25 | **99.72** / 0.35% | 95.45 / 63.27% | **99.99** / 0.36% |
+| HRY with AS>=60 / + MAPQ>=25 | 0.28 / 0.17% | 90.15 / 63.26% | 0.18 / 0.10% |
+
+strobealign always reports its best local alignment. On p1, 99.8% of HRY's mapped records are
+soft-clipped with an alignment score below 60: a 17-20 bp exact hit with the rest of the read
+clipped. **MAPQ does not remove them**: of HRY's 3,587 MAPQ>=25 records on p1, 71% have AS < 60
+(e.g. `17M28S`, MAPQ 25), and only 1,022 of them are reads bwa aln maps at all. The simulated set
+(all endogenous) cannot show this. The paper's evaluation applies AS >= 60, so its numbers never
+include these records; a pipeline would have to apply the same filter (`samtools view -q` is not
+enough). That filter costs HRY 2.6 accuracy points at 20-39 bp on the simulated set (78.40 ->
+75.81%; aln 79.87%), nothing from 40 bp up, and on p17 it leaves HRY with 5.7 points fewer MAPQ>=25
+reads than aln (63.26 vs 68.96%), in line with the 5.9-8.0 point gap at 30-49 bp on the simulated
+set.
+
+## Verdict
+
+**Not adopted.** On human aDNA against hs37d5, strobealign-HRY is less accurate than `bwa aln` in
+every length bin, far less at any MAPQ or precision cut, and has about twice its reference bias. As
+the short arm it makes the hybrid worse on both accuracy and bias, and as the long arm too. Its
+real-library speed (9-14 s per 1 M reads on 32 cores, 21 GB RAM, 21 GB index) beats CPU bwa aln
+6-10x but not gpualn on low-endogenous libraries, and its output needs an alignment-score filter
+before it can be counted. It is the strongest seed-based option tested for very short reads
+(73.6% at 20-29 bp, where mem maps none), and a reasonable choice where the paper aims it:
+divergent or metagenomic references, and CPU-only machines where bwa aln's runtime is the
+bottleneck.
+
+## Two scorer fixes made for this test
+
+- `score_sam.py` / `hybrid_curve.py` compared SAM `POS` to the true start, so a read with a leading
+  soft clip was always wrong. They now compare the unclipped start (`--raw-pos` restores the old
+  rule). aln never clips and mem3 `-L 15` clips 0.007% of reads, so their numbers are unchanged;
+  strobealign clips 0.6-0.7% (1.1-1.4% below 64 bp) and gains 0.12 points (default 91.094 ->
+  91.213). The earlier verdict on strobealign as a long arm stands.
+- `ref_bias.py` / `bias_by_len.py` counted alleles at chr22 coordinates for reads mapped to *any*
+  chromosome. They now skip records off chr22 (`--chrom ''` restores the old rule). At MAPQ>=25
+  nothing changes to 5 decimals (aln +0.00952, mem3 +0.01188); unfiltered aln moves +0.01312 ->
+  +0.01306.
+
+Reproduce: `cuda/tools/benchmark/hry_run.sh` (simulated set; scoring with `score_sam.py`,
+`mapq_curve.py`, `hybrid_curve.py`, `merge_hybrid.py`, `ref_bias.py --dump`, `bootstrap_bias.py`,
+`bias_by_len.py`, `clipstats.py`) and `hry_speed.sh` (real libraries). The simulated set was
+regenerated with seed 7 and reproduces the earlier aln and mem numbers exactly; it now lives in
+`/home/teemu/sorsa/adna_simbench/work` (outside the repo, survives reboots).

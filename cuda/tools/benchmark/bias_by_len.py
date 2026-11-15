@@ -6,6 +6,7 @@ from collections import defaultdict
 from ref_bias import load_het, cigar_pairs, TRANSITION
 
 variants, mapq = sys.argv[1], int(sys.argv[2])
+CHROM = '22'      # the variants' chromosome; records elsewhere are skipped (counted before 2026-11-15)
 het = load_het(variants)
 cols = []
 for spec in sys.argv[3:]:
@@ -16,7 +17,7 @@ for spec in sys.argv[3:]:
             continue
         f = line.split('\t', 11)
         flag = int(f[1])
-        if flag & 0x904 or int(f[4]) < mapq:
+        if flag & 0x904 or int(f[4]) < mapq or f[2] != CHROM:
             continue
         refpos, seq = int(f[3]), f[9]
         lbin = min(14, (int(f[0].split(':')[4]) - 20) // 10)

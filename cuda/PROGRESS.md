@@ -1972,3 +1972,27 @@ merged `dev-0.2.7` into `main`, leaving #3 with a CHANGELOG conflict; rebased lo
 rebased build, silence nvcc's #550-D "set but never used" warnings (the counting pass of `PF_CH` in
 `prefilter.cuh` ignores its arguments), and refresh the PR's timings against the 0.2.7 release.
 
+
+## Phase 35 — strobealign-HRY (hybrid RY-mers) tested: not adopted
+
+Tolstoganov & Sahlin's aDNA mode for strobealign (bioRxiv 2026.11.05.764514) claims higher accuracy
+than `bwa aln -n 0.01 -o 2 -l 1024` at 4-6x its speed, on 40 bp reads at 0.5-5% divergence, with an
+overlap-based correctness rule and no MAPQ or reference-bias results. Run with the authors' settings
+(`--adna --ry-len 8 -M 500 --ssw -k 17 -s 15`, tag `hry`) through our harness on the regenerated
+1.5 M-read set, and timed on the three real libraries. Full tables: BENCHMARK_ACCURACY.md.
+
+- Accuracy 92.74% vs aln 93.33%; below aln in 14 of 15 length bins, incl. 40-49 bp (-0.69). At
+  MAPQ>=25, 80.1 vs 86.7%; at equal precision (99.9%) 81.8 vs 89.8%.
+- Reference bias (tv, MAPQ>=25) +0.0182 vs aln +0.0095 and mem3 +0.0119, significant; 13% of alt
+  alleles lost at 30-39 bp (aln 3.7%). The paper does not measure bias.
+- Hybrid at 64: HRY + mem3 93.03 / 83.77 / +0.0140 and aln + HRY 93.06 / 82.26 / +0.0129, vs
+  production aln + mem3 93.35 / 85.96 / +0.0091 (accuracy / MAPQ>=25 / bias).
+- Speed, saved index, `-t 32`, one run at a time: 9.1 / 8.9 / 14.4 s on sub100k / p17 / p1, vs CPU
+  bwa aln 15.4 / 57.1 / 138.7 s and gpualn 2.2 / 17.4 / 7.8 s (2026-11-01). 21 GB RAM, 21 GB index.
+- On real libraries HRY reports 99.7-99.99% of exogenous reads as mapped (soft-clipped 17-20 bp
+  local hits); 71% of its MAPQ>=25 records on p1 have AS < 60. Needs the paper's AS >= 60 filter.
+
+Also fixed in the harness: soft-clipped reads were always scored wrong (now: unclipped start), and
+the bias scripts counted reads on other chromosomes. Neither changes an earlier conclusion. The
+scratchpad holding the benchmark set was lost in a reboot; the set was regenerated (seed 7, same
+numbers) into `/home/teemu/sorsa/adna_simbench/work`.

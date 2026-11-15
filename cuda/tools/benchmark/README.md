@@ -74,3 +74,27 @@ experimental *design* with runnable code.
   downstream D-statistics and PCA effects their paper also reports.
 - Every read is endogenous (drawn from chr22). Real aDNA libraries are mostly exogenous, so these
   numbers describe accuracy on mappable reads and say nothing about runtime on real libraries.
+
+## Scorer changes (2026-11-15)
+
+- **Correct = unclipped start.** `score_sam.py` and `hybrid_curve.py` compare POS minus any leading
+  soft/hard clip with the true start. Before, they compared POS itself, so every read a local
+  aligner clipped at the left end was scored wrong (strobealign: -0.12 accuracy points). `--raw-pos`
+  restores the old rule. bwa aln and `mem -L 15` results are unchanged.
+- **Bias counts only chr22 records.** `ref_bias.py` (`--chrom`, default `22`) and `bias_by_len.py`
+  skip records mapped to other chromosomes; before, their bases were counted at the same coordinate.
+  No change at MAPQ>=25 to 5 decimals.
+
+## More tools
+
+- `mapq_curve.py SAM...` -- precision and accuracy at every MAPQ threshold, and the best accuracy
+  reached at precision >= 99.9 / 99.95 / 99.99%: the fair comparison between mappers whose MAPQ
+  scales differ.
+- `merge_hybrid.py SHORT LONG CUT OUT` -- a hybrid SAM from two full runs (reads < CUT from SHORT),
+  for `ref_bias.py --dump` and the bootstrap.
+- `clipstats.py SAM...` -- soft-clipping rates.
+- `hry_run.sh WORKDIR` / `hry_speed.sh OUTDIR` -- the strobealign-HRY test (BENCHMARK_ACCURACY.md).
+
+The data (chr22.fa, NA19471 SNVs, the La Brana table, `sim15M.fq` = `--n 1500000 --seed 7`, and
+the SAMs) live in `/home/teemu/sorsa/adna_simbench/work`; the 1000G VCF and the damage table are
+kept as downloaded in `dl_vcf/` and `dl_damage/` next to it.
