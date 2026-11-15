@@ -1993,6 +1993,11 @@ not reproduce (HRY -0.69 points at 40-49 bp). Run with the authors' settings
   bwa aln 15.4 / 57.1 / 138.7 s and gpualn 2.2 / 17.4 / 7.8 s (2026-11-01). 21 GB RAM, 21 GB index.
 - On real libraries HRY reports 99.7-99.99% of exogenous reads as mapped (soft-clipped 17-20 bp
   local hits); 71% of its MAPQ>=25 records on p1 have AS < 60. Needs the paper's AS >= 60 filter.
+- gpualn short + HRY long: accuracy is aln + HRY above (93.06 / 82.26 / +0.0129). Speed, long arm
+  only (the short arm is unchanged): on the >= 64 bp reads of ADF_9 / ADF_21 / ADF_14 (1.9 / 3.3 /
+  9.0 M reads), mem3 takes 2.1 / 5.0 / 13.6 s and HRY 38.3 / 80.1 / 140.4 s, 10-19x slower. HRY's
+  extension step (`-M 500 --ssw`) dominates. Mapping would get about 1.8-2.8x slower overall, so
+  this combo was rejected. The speed lever is the short arm (G-ALN + prefilter).
 
 Also fixed in the harness: soft-clipped reads were always scored wrong (now: unclipped start), and
 the bias scripts counted reads on other chromosomes. Neither changes an earlier conclusion. The

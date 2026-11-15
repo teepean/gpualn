@@ -541,6 +541,48 @@ enough). That filter costs HRY 2.6 accuracy points at 20-39 bp on the simulated 
 reads than aln (63.26 vs 68.96%), in line with the 5.9-8.0 point gap at 30-49 bp on the simulated
 set.
 
+## gpualn short + HRY long (asked 2026-11-15)
+
+gpualn's output is identical to bwa aln's, so this combo's accuracy is the aln + HRY row above:
+**93.061 / 82.264 / +0.01291** against production's 93.347 / 85.962 / +0.00913 (accuracy / MAPQ>=25
+/ bias). The production combo is significantly less biased, by 0.00378 [0.00236, 0.00534]. Per long-read bin, HRY is below
+mem3 in every bin from 60 bp up: -0.10 to -0.90 points unfiltered and -4.3 to -6.2 points at
+MAPQ>=25.
+
+The short arm is the same in both combos, so the speed difference is only the long arm. It was timed
+on the reads >= 64 bp from three real libraries, taken from their production `long.bam`
+(primary records, shuffled). Each tool ran 3 times strictly one at a time, `-t 32`, with the page
+cache warm. Commands: `bwa-mem3 mem -L 15 --supp-rep-hard-cap 5` (the pipeline's long arm) and HRY
+with the paper's settings and the saved index (`cuda/tools/benchmark/hry_long_speed.sh`).
+
+| library, reads >= 64 bp | ADF_9: 1.93 M, 0.4% mapped | ADF_21: 3.30 M, 4.3% | ADF_14: 9.01 M, 39.1% |
+| --- | --- | --- | --- |
+| **bwa-mem3** (median of 3) | **2.06 s** | **5.04 s** | **13.62 s** |
+| strobealign-HRY, saved index | 38.31 s | 80.07 s | 140.44 s |
+| HRY / mem3 | 18.6x slower | 15.9x slower | 10.3x slower |
+| reads/s: mem3 / HRY | 937 k / 50 k | 656 k / 41 k | 662 k / 64 k |
+| peak memory: mem3 / HRY | 13.7 / 21.3 GB | 15.5 / 21.4 GB | 19.3 / 21.5 GB |
+| mem3 MAPQ>=25 / HRY MAPQ>=25 (HRY with AS>=60) | 0.11 / 0.13% (0.10) | 0.29 / 0.47% (0.37) | 31.75 / 30.03% (29.96) |
+
+In context: these libraries' production mapping step (gpualn + mem3, split 50, `-t 16`, from the
+file times) took about 19 / 91 / 127 s, with 80-90% of it in the gpualn arm. HRY's long arm alone
+takes about as long as that whole step. So **the combo would make mapping roughly 1.8-2.8x slower,
+not faster.** This is an estimate: it mixes `-t 16` production times with `-t 32` measurements, so
+the true slowdown at `-t 16` is likely larger.
+
+HRY's time is spent in extension: 3,916 of the 4,248 thread-seconds its step timers report on
+ADF_14. With `-M 500 --ssw` it aligns up to 500 candidate sites per read, and it reports 99.6-99.96%
+of the long reads as mapped. Turning those settings down cannot rescue the combo. mem3's whole long
+arm takes 2-14 s, so even an instant HRY would save at most about 11 s per library, under 10% of the
+mapping step. Lower `-M` would also be an accuracy-untested setting. On the low-endogenous ADF_21,
+HRY gives more MAPQ>=25 records than mem3 even after AS>=60. Without truth, there is no telling
+whether those are real.
+
+**HRY is fast on short reads and slow on long reads, and mem3 is very fast on long reads. So the
+long arm is the wrong place for HRY. The production bottleneck is the short arm, and the speed lever
+there is the pending G-ALN release with the scheme prefilter (1.1-1.8x over gpualn on the three test
+libraries, table above).**
+
 ## Verdict
 
 **Not adopted.** On human aDNA against hs37d5, strobealign-HRY is less accurate than `bwa aln` in

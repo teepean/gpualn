@@ -1170,10 +1170,67 @@ paired bootstrap over 10828 het sites, B=2000
   - adna_bench's compile rule uses `cargo build` (dev profile, opt-level 1); if the paper's timings
     came from it they understate HRY's speed. Ours is a release build.
 
+15. GPUALN SHORT + HRY LONG (asked 2026-11-15)
+==============================================
+  Accuracy: gpualn output is byte-identical to bwa aln, so the combo is the aln + HRY hybrid of
+  section 9 at cutoff 64:
+    gpualn/aln + HRY      accuracy 93.061%  MAPQ>=25 82.264%  bias +0.01291 [+0.00782, +0.01794]
+    gpualn/aln + mem3     accuracy 93.347%  MAPQ>=25 85.962%  bias +0.00913 [+0.00425, +0.01402]
+    production - combo    bias -0.00378 [-0.00534, -0.00236]  SIGNIFICANT
+
+  Long-read bins, HRY vs bwa-mem3 (accuracy %, unfiltered | MAPQ>=25):
+    bin       mem3    HRY     diff  |  mem3    HRY     diff
+    60-69    93.84   92.93   -0.90  |  85.27   79.61   -5.65
+    70-79    95.02   94.27   -0.75  |  87.80   81.76   -6.04
+    80-89    95.53   94.85   -0.68  |  89.34   83.18   -6.16
+    90-99    96.09   95.53   -0.56  |  90.68   84.44   -6.23
+    100-109  96.55   96.06   -0.48  |  91.52   85.60   -5.92
+    110-119  96.63   96.28   -0.35  |  91.07   86.13   -4.94
+    120-129  96.91   96.63   -0.28  |  91.73   86.93   -4.79
+    130-139  97.08   96.93   -0.15  |  91.98   87.42   -4.55
+    140-149  97.27   97.06   -0.21  |  92.27   87.73   -4.54
+    150-159  97.34   97.24   -0.10  |  92.44   88.02   -4.42
+    160-169  97.53   97.41   -0.12  |  92.71   88.37   -4.34
+
+  Speed: the short arm is identical in both combos, so only the long arm was timed. Reads >= 64 bp
+  from the production long.bam of three real libraries (primary records, shuffled), -t 32, page
+  cache warm, strictly one run at a time, 3 runs each (cuda/tools/benchmark/hry_long_speed.sh).
+    bwa-mem3 mem -L 15 --supp-rep-hard-cap 5
+    strobealign --adna --ry-len 8 -M 500 --ssw -k 17 -s 15 -r 50 --use-index
+
+    library  reads>=64  mean len   mem3 runs (s)        HRY runs (s)            HRY/mem3
+    ADF_9    1,930,121   91.4 bp   2.06  2.03  2.10     38.31  38.30  38.54     18.6x
+    ADF_21   3,304,868   87.4 bp   5.24  4.97  5.04     79.67  80.07  80.56     15.9x
+    ADF_14   9,012,813   90.6 bp  13.51 13.62 13.77    140.35 141.08 140.44     10.3x
+
+    peak RSS mem3 / HRY:  13.7 / 21.3 GB   15.5 / 21.4 GB   19.3 / 21.5 GB
+    HRY on ADF_14: index read 2.42 s; step timers (thread-seconds): strobemers 21.4, hits 188.3,
+      chaining 111.7, sorting 10.2, extension 3,916.4
+
+    What each reports as mapped (primary records):
+    ADF_9   mem3 mapped  0.40%  MAPQ>=25  0.11%  MAPQ>=30  0.10% | AS>=60  0.20%  +MAPQ>=25  0.09%
+            HRY  mapped 99.96%  MAPQ>=25  0.13%  MAPQ>=30  0.10% | AS>=60  0.31%  +MAPQ>=25  0.10%
+    ADF_21  mem3 mapped  4.29%  MAPQ>=25  0.29%  MAPQ>=30  0.25% | AS>=60  3.04%  +MAPQ>=25  0.21%
+            HRY  mapped 99.83%  MAPQ>=25  0.47%  MAPQ>=30  0.36% | AS>=60  3.81%  +MAPQ>=25  0.37%
+    ADF_14  mem3 mapped 39.10%  MAPQ>=25 31.75%  MAPQ>=30 31.31% | AS>=60 36.85%  +MAPQ>=25 30.72%
+            HRY  mapped 99.56%  MAPQ>=25 30.03%  MAPQ>=30 29.38% | AS>=60 38.59%  +MAPQ>=25 29.96%
+
+  In context: these libraries' production mapping step (gpualn + mem3, split 50, -t 16, from the
+  short.bam / long.bam file times) took about 19 / 91 / 127 s, 80-90% of it in the gpualn arm
+  (16+3, 82+9, 102+25 s). HRY's long arm alone is about that long, so the combo would make mapping
+  roughly 1.8-2.8x slower. Estimate only: it mixes -t 16 production times with -t 32 runs, so the
+  slowdown at -t 16 is likely larger. Lower -M cannot rescue it: mem3's whole long arm is 2-14 s,
+  so even an instant HRY saves at most about 11 s per library, and lower -M is accuracy-untested.
+
+  Verdict: rejected. HRY is fast on short reads and slow on long reads, and bwa-mem3 is very fast on
+  long reads. The production bottleneck is the short arm (G-ALN + scheme prefilter is the lever).
+
 FILES
   Data, SAMs, logs:   /home/teemu/sorsa/adna_simbench/work   (simulated set)
                       /home/teemu/sorsa/adna_simbench/speed  (real libraries)
-  Scripts:            cuda/tools/benchmark/ (hry_run.sh, hry_speed.sh, score_sam.py,
+                      /home/teemu/sorsa/adna_simbench/speed_long  (section 15)
+  Scripts:            cuda/tools/benchmark/ (hry_run.sh, hry_speed.sh, hry_long_speed.sh,
+                      score_sam.py,
                       mapq_curve.py, hybrid_curve.py, merge_hybrid.py, ref_bias.py,
                       bias_by_len.py, bootstrap_bias.py, clipstats.py)
   HRY source/binary:  /home/teemu/sorsa/hry/strobealign-hry (tag hry); authors' benchmark code in
