@@ -297,9 +297,12 @@ is a larger piece of code, and on sub100k the long reads cost G-ALN only ~0.4 s.
 - **The prefilter belongs in G-ALN** -- it is the published, maintained tool for this community,
   and the combination beats both. Submitted 2026-11-01 as
   [#3](https://github.com/bilalbioinfo/galn/pull/3) against their `dev-0.2.7` (fork `teepean/galn`,
-  branch `scheme-prefilter-027`, commit `b43ed28` = `cuda/patches/galn-0.2.7-scheme-prefilter.patch`).
+  branch `scheme-prefilter-027`, first as commit `b43ed28`).
   On 2026-11-06 `dev-0.2.7` was merged into `main` and released as v0.2.7, leaving #3 with a conflict
-  in the CHANGELOG heading only. Rebased locally as `3a2fe79` (the same code lines; builds). Pushing
-  it and retargeting #3 to `main` wait for the go-ahead; the GPU re-test waits for a free GPU.
+  in the CHANGELOG heading only. On 2026-11-15 the branch was force-pushed as the rebase `3a2fe79`
+  (the same code lines; builds; = `cuda/patches/galn-0.2.7-scheme-prefilter.patch`), #3 retargeted
+  to `main` (mergeable), its description updated to say the 0.2.7 timings come from the pre-release
+  `dev-0.2.7` with the page-cache bug, and the #2 fix confirmed in a comment. The GPU re-test (and
+  the nvcc #550-D warning fix) waits for a free GPU.
 - **Pipeline short arm:** gpualn stays until the prefilter is in a G-ALN release (gpualn is faster
   than stock G-ALN on every library we tried); then switch to G-ALN, after a pipeline-level check.

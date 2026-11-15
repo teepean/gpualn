@@ -1,0 +1,1180 @@
+STROBEALIGN-HRY vs BWA ALN vs BWA-MEM3 -- FULL BENCHMARK DATA
+2026-11-15, gpualn project (cuda/). Summary and verdict: cuda/BENCHMARK_ACCURACY.md, section
+"strobealign-HRY: tested 2026-11-15, not adopted". This file holds the complete numbers behind it.
+
+VERDICT
+  Not adopted for the human aDNA pipeline. On ground truth (1.5 M simulated reads, hs37d5):
+  - accuracy 92.744% vs bwa aln 93.334%; HRY below aln in 14 of 15 length bins;
+  - at MAPQ>=25 80.075% vs 86.731%; at equal precision 99.9%: 81.769% vs 89.836%;
+  - transversion reference bias (MAPQ>=25) +0.01819 vs aln +0.00952 (significant);
+  - either hybrid arm is worse than production aln + bwa-mem3 (93.347%, bias +0.00913).
+  Speed (real libraries, 32 threads, saved index): 6-10x faster than CPU bwa aln, slower than
+  gpualn on the two low-endogenous libraries, faster on the 94%-endogenous one; 21 GB RAM.
+  On real libraries HRY reports nearly every exogenous read as mapped (soft-clipped local hits)
+  unless filtered on alignment score >= 60.
+
+PAPER
+  Tolstoganov I, Sahlin K. Hybrid RY-mers increase aDNA alignment sensitivity.
+  bioRxiv 10.64898/2026.11.05.764514, v2 posted 2026-11-10.
+  Code: https://github.com/Itolstoganov/strobealign/releases/tag/hry
+  Evaluation: https://github.com/Itolstoganov/adna_bench
+  The paper measures accuracy (primary overlaps the true interval and alignment score >= 60 under
+  strobealign's scoring), deaminated-read accuracy, runtime, memory, and aMeta taxon recovery.
+  It does NOT measure reference bias (its simulation has no heterozygous sites), and reports no
+  MAPQ-filtered results. Reads are 40 bp only; divergence is 0.5/2/5% synthetic substitutions and
+  indels (Mason) written into fruit fly, ZymoBIOMICS and human CHM13 references.
+
+
+1. SETUP
+========
+Machine     AMD Ryzen 9 9950X (16 cores / 32 threads), 123 GB RAM, Linux 7.3.1-1-cachyos.
+            GPU not used (reserved for another process); gpualn/G-ALN rows are from 2026-11-01.
+Tools       bwa 0.7.18-r1243 (/usr/bin/bwa)
+            bwa-mem3 v0.14.1 (/home/teemu/sorsa/bwa-mem3-v0141/bwa-mem3) -- the pipeline's long arm
+            strobealign 0.18.0-alpha, tag `hry` = commit 4be2dcc (Itolstoganov/strobealign),
+              built with `cargo build --release` (rustc 1.99.1); used for HRY, DK and plain runs
+            samtools 1.23, Python 3.14.9
+Reference   hs37d5 (/home/dnastorage/aDNApipeline/hs37d5.fa)
+
+Strategies and exact options
+  aln      bwa aln -l 1024 -n 0.01 -o 2 -t T  +  bwa samse         (BWA1; also the paper's options)
+  mem3     bwa-mem3 mem -L 15 --supp-rep-hard-cap 5 -t T           (pipeline MEM_OPTS since 2026-10-14)
+  hry      strobealign --adna --ry-len 8 -M 500 --ssw -k 17 -s 15  (the paper's HRY, from
+           adna_bench simx/config/config.yaml: versions[0] + main_k 17, s = k - 3 + 1)
+  hry50    as hry plus -r 50 (short-read profile; the set's estimated length is 94 bp)
+           -> byte-identical records to hry (cmp of all non-header lines)
+  hrydef   strobealign --adna                                       (release default)
+  dk       strobealign -l 1 -u 1 -M 500 -k 17 -s 15                 (the paper's non-aDNA baseline)
+  strobe   strobealign                                              (plain defaults, same binary)
+  Hybrids: reads < 64 bp to the first mapper, >= 64 bp to the second (hybrid_curve.py for every
+  cutoff; merge_hybrid.py builds the SAM for the bias tests).
+
+Simulated set (cuda/tools/benchmark/simulate_adna.py)
+  1,500,000 reads, 20-169 bp in 15 equal bins (100,000 per bin), drawn from chr22 of hs37d5
+  carrying NA19471 (LWK) biallelic SNVs (1000G phase 3 v5b; 38,599 het sites on chr22), haplotype
+  50/50 per read, La Brana mapDamage profile (C>T 5', G>A 3'), flat Q37 with matching error rate,
+  seed 7 ("2206285 position draws" -- identical to the 2026-10 set). All reads endogenous.
+  Truth in the read name: r<idx>:<chrom>:<1-based leftmost ref pos>:<strand>:<len>:<hap>.
+
+Scoring
+  correct   = primary record mapped to the true chromosome with unclipped start == true start
+              (POS minus leading S/H; tol 0). --raw-pos = old rule (POS itself).
+  mapped%   = mapped / total; precision% = correct / mapped; accuracy% = correct / total.
+  bias      = 0.5 - alt/(ref+alt) at heterozygous TRANSVERSION sites (damage cannot fake them),
+              reads mapped to chr22 only; control = counting at the true positions.
+  bootstrap = paired, het SITE resampled, B = 2000.
+
+Real libraries (cuda/../test_data)
+  sub100k     100,000 reads, 30-91 bp, head of AVA1B (soil), 0.5% mapped by bwa aln
+  p17_shuf1m  999,552 reads, 30-49 bp, pipeline short branch, 94.4% mapped
+  p1_shuf1m   1,000,528 reads, 30-49 bp, pipeline short branch, 0.2% mapped
+  Speed runs: -t 32, strictly one at a time, nothing else running, page cache warmed before
+  each tool. HRY index built once with -r 50 (--create-index) and loaded with --use-index.
+
+
+2. SIMULATED SET: HEADLINE (unclipped start, tol 0)
+===================================================
+  strategy  mapped% precision%  accuracy% | MQ25 map  MQ25 prec   MQ25 acc |  acc raw POS
+  aln        99.962     93.370     93.334 |   86.737     99.993     86.731 |       93.334
+  mem3       92.913     94.595     87.891 |   81.845     99.978     81.827 |       87.891
+  hry        98.286     94.361     92.744 |   80.122     99.942     80.075 |       92.620
+  hrydef     96.963     93.622     90.779 |   78.431     99.906     78.357 |       90.664
+  dk         98.704     94.081     92.862 |   80.333     99.892     80.246 |       92.740
+  strobe     97.553     93.501     91.213 |   81.299     99.873     81.195 |       91.094
+  (hry50: identical records to hry)
+
+
+3. SIMULATED SET: PER LENGTH BIN, EVERY STRATEGY
+================================================
+
+--- aln, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    99.996      75.789      75.786
+   30- 39   100000    99.994      83.962      83.957
+   40- 49   100000    99.998      88.674      88.672
+   50- 59   100000    99.997      91.988      91.985
+   60- 69   100000    99.997      93.870      93.867
+   70- 79   100000    99.995      95.093      95.088
+   80- 89   100000    99.996      95.579      95.575
+   90- 99   100000    99.985      96.179      96.165
+  100-109   100000    99.981      96.549      96.531
+  110-119   100000    99.960      96.704      96.665
+  120-129   100000    99.945      96.953      96.900
+  130-139   100000    99.941      97.105      97.048
+  140-149   100000    99.919      97.233      97.154
+  150-159   100000    99.870      97.326      97.199
+  160-169   100000    99.854      97.563      97.421
+  ALL      1500000    99.962      93.370      93.334
+
+--- aln, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    56.712      99.986      56.704
+   30- 39   100000    73.377     100.000      73.377
+   40- 49   100000    78.855      99.995      78.851
+   50- 59   100000    83.197      99.990      83.189
+   60- 69   100000    86.498      99.995      86.494
+   70- 79   100000    88.909      99.994      88.904
+   80- 89   100000    90.182      99.993      90.176
+   90- 99   100000    91.450      99.988      91.439
+  100-109   100000    92.212      99.992      92.205
+  110-119   100000    92.482      99.994      92.476
+  120-129   100000    92.993      99.990      92.984
+  130-139   100000    93.269      99.990      93.260
+  140-149   100000    93.511      99.993      93.504
+  150-159   100000    93.554      99.997      93.551
+  160-169   100000    93.858      99.991      93.850
+  ALL      1500000    86.737      99.993      86.731
+
+--- mem3, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000     0.000       0.000       0.000
+   30- 39   100000    93.848      83.561      78.420
+   40- 49   100000    99.857      88.554      88.427
+   50- 59   100000    99.988      91.755      91.744
+   60- 69   100000    99.999      93.838      93.837
+   70- 79   100000   100.000      95.019      95.019
+   80- 89   100000   100.000      95.527      95.527
+   90- 99   100000   100.000      96.090      96.090
+  100-109   100000   100.000      96.545      96.545
+  110-119   100000   100.000      96.631      96.631
+  120-129   100000   100.000      96.912      96.912
+  130-139   100000   100.000      97.077      97.077
+  140-149   100000   100.000      97.267      97.267
+  150-159   100000   100.000      97.338      97.338
+  160-169   100000   100.000      97.531      97.531
+  ALL      1500000    92.913      94.595      87.891
+
+--- mem3, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000     0.000       0.000       0.000
+   30- 39   100000    69.187      99.928      69.137
+   40- 49   100000    80.021      99.934      79.968
+   50- 59   100000    81.505      99.975      81.485
+   60- 69   100000    85.279      99.987      85.268
+   70- 79   100000    87.811      99.989      87.801
+   80- 89   100000    89.361      99.980      89.343
+   90- 99   100000    90.699      99.975      90.676
+  100-109   100000    91.535      99.983      91.519
+  110-119   100000    91.085      99.987      91.073
+  120-129   100000    91.743      99.984      91.728
+  130-139   100000    91.995      99.979      91.976
+  140-149   100000    92.274      99.993      92.268
+  150-159   100000    92.452      99.992      92.445
+  160-169   100000    92.727      99.985      92.713
+  ALL      1500000    81.845      99.978      81.827
+
+--- hry, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    90.931      80.951      73.610
+   30- 39   100000    94.558      87.983      83.195
+   40- 49   100000    96.358      91.311      87.985
+   50- 59   100000    97.549      93.484      91.193
+   60- 69   100000    98.194      94.642      92.933
+   70- 79   100000    98.850      95.362      94.265
+   80- 89   100000    99.181      95.630      94.847
+   90- 99   100000    99.405      96.100      95.528
+  100-109   100000    99.571      96.476      96.062
+  110-119   100000    99.699      96.570      96.279
+  120-129   100000    99.994      96.633      96.627
+  130-139   100000    99.995      96.931      96.926
+  140-149   100000    99.999      97.061      97.060
+  150-159   100000    99.999      97.238      97.237
+  160-169   100000   100.000      97.406      97.406
+  ALL      1500000    98.286      94.361      92.744
+
+--- hry, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    46.969      99.146      46.568
+   30- 39   100000    65.431      99.873      65.348
+   40- 49   100000    73.034      99.925      72.979
+   50- 59   100000    77.051      99.955      77.016
+   60- 69   100000    79.640      99.969      79.615
+   70- 79   100000    81.775      99.978      81.757
+   80- 89   100000    83.197      99.984      83.184
+   90- 99   100000    84.456      99.983      84.442
+  100-109   100000    85.610      99.992      85.603
+  110-119   100000    86.144      99.988      86.134
+  120-129   100000    86.945      99.987      86.934
+  130-139   100000    87.433      99.991      87.425
+  140-149   100000    87.735      99.994      87.730
+  150-159   100000    88.029      99.992      88.022
+  160-169   100000    88.375      99.995      88.371
+  ALL      1500000    80.122      99.942      80.075
+
+--- hrydef, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    70.176      76.361      53.587
+   30- 39   100000    94.442      85.661      80.900
+   40- 49   100000    96.528      89.627      86.515
+   50- 59   100000    97.749      91.959      89.889
+   60- 69   100000    98.416      93.380      91.901
+   70- 79   100000    99.003      94.309      93.369
+   80- 89   100000    99.295      94.922      94.253
+   90- 99   100000    99.511      95.539      95.072
+  100-109   100000    99.640      96.015      95.669
+  110-119   100000    99.730      96.154      95.894
+  120-129   100000    99.960      96.473      96.434
+  130-139   100000   100.000      96.674      96.674
+  140-149   100000   100.000      96.968      96.968
+  150-159   100000   100.000      97.198      97.198
+  160-169   100000   100.000      97.365      97.365
+  ALL      1500000    96.963      93.622      90.779
+
+--- hrydef, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    23.502      97.085      22.817
+   30- 39   100000    56.877      99.633      56.668
+   40- 49   100000    71.034      99.907      70.968
+   50- 59   100000    76.198      99.950      76.160
+   60- 69   100000    79.537      99.981      79.522
+   70- 79   100000    82.306      99.968      82.280
+   80- 89   100000    83.983      99.981      83.967
+   90- 99   100000    85.415      99.981      85.399
+  100-109   100000    86.706      99.994      86.701
+  110-119   100000    87.191      99.993      87.185
+  120-129   100000    87.990      99.989      87.980
+  130-139   100000    88.446      99.989      88.436
+  140-149   100000    88.836      99.994      88.831
+  150-159   100000    89.093     100.000      89.093
+  160-169   100000    89.355      99.999      89.354
+  ALL      1500000    78.431      99.906      78.357
+
+--- dk, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    90.971      79.676      72.482
+   30- 39   100000    95.927      86.339      82.822
+   40- 49   100000    97.602      90.403      88.235
+   50- 59   100000    98.563      92.958      91.622
+   60- 69   100000    99.028      94.407      93.489
+   70- 79   100000    99.410      95.264      94.702
+   80- 89   100000    99.616      95.694      95.327
+   90- 99   100000    99.749      96.014      95.773
+  100-109   100000    99.817      96.549      96.372
+  110-119   100000    99.881      96.521      96.406
+  120-129   100000   100.000      96.759      96.759
+  130-139   100000   100.000      96.958      96.958
+  140-149   100000   100.000      97.170      97.170
+  150-159   100000   100.000      97.342      97.342
+  160-169   100000   100.000      97.472      97.472
+  ALL      1500000    98.704      94.081      92.862
+
+--- dk, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    43.252      97.857      42.325
+   30- 39   100000    64.387      99.725      64.210
+   40- 49   100000    72.556      99.921      72.499
+   50- 59   100000    77.035      99.956      77.001
+   60- 69   100000    79.873      99.966      79.846
+   70- 79   100000    82.373      99.984      82.360
+   80- 89   100000    83.972      99.976      83.952
+   90- 99   100000    85.299      99.986      85.287
+  100-109   100000    86.494      99.987      86.483
+  110-119   100000    87.019      99.995      87.015
+  120-129   100000    87.825      99.989      87.815
+  130-139   100000    88.206      99.995      88.202
+  140-149   100000    88.623      99.995      88.619
+  150-159   100000    88.889      99.999      88.888
+  160-169   100000    89.197      99.994      89.192
+  ALL      1500000    80.333      99.892      80.246
+
+--- strobe, MAPQ>=0 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    68.115      79.115      53.889
+   30- 39   100000    95.980      82.865      79.534
+   40- 49   100000    99.326      87.217      86.629
+   50- 59   100000    99.918      90.916      90.841
+   60- 69   100000    99.977      93.153      93.132
+   70- 79   100000    99.992      94.632      94.624
+   80- 89   100000    99.997      95.298      95.295
+   90- 99   100000    99.997      95.796      95.793
+  100-109   100000   100.000      96.284      96.284
+  110-119   100000    99.997      96.440      96.437
+  120-129   100000   100.000      96.840      96.840
+  130-139   100000   100.000      97.011      97.011
+  140-149   100000   100.000      97.168      97.168
+  150-159   100000   100.000      97.272      97.272
+  160-169   100000   100.000      97.444      97.444
+  ALL      1500000    97.553      93.501      91.213
+
+--- strobe, MAPQ>=25 ---
+  bin        reads   mapped%    precision%   accuracy%
+   20- 29   100000    46.878      98.564      46.205
+   30- 39   100000    66.343      99.299      65.878
+   40- 49   100000    72.314      99.788      72.161
+   50- 59   100000    76.213      99.932      76.161
+   60- 69   100000    79.133      99.956      79.098
+   70- 79   100000    82.045      99.960      82.012
+   80- 89   100000    84.150      99.955      84.112
+   90- 99   100000    86.075      99.967      86.047
+  100-109   100000    87.576      99.979      87.558
+  110-119   100000    88.302      99.980      88.284
+  120-129   100000    89.258      99.984      89.244
+  130-139   100000    89.768      99.989      89.758
+  140-149   100000    90.234      99.992      90.227
+  150-159   100000    90.467      99.996      90.463
+  160-169   100000    90.725      99.996      90.721
+  ALL      1500000    81.299      99.873      81.195
+
+
+4. ACCURACY DIFFERENCE TO BWA ALN PER BIN (percentage points)
+=============================================================
+
+  MAPQ>=0: accuracy(strategy) - accuracy(aln)
+  bin       aln acc        mem3       hry    hrydef        dk    strobe
+   20- 29    75.786     -75.786    -2.176   -22.199    -3.304   -21.897
+   30- 39    83.957      -5.537    -0.762    -3.057    -1.135    -4.423
+   40- 49    88.672      -0.245    -0.687    -2.157    -0.437    -2.043
+   50- 59    91.985      -0.241    -0.792    -2.096    -0.363    -1.144
+   60- 69    93.867      -0.030    -0.934    -1.966    -0.378    -0.735
+   70- 79    95.088      -0.069    -0.823    -1.719    -0.386    -0.464
+   80- 89    95.575      -0.048    -0.728    -1.322    -0.248    -0.280
+   90- 99    96.165      -0.075    -0.637    -1.093    -0.392    -0.372
+  100-109    96.531      +0.014    -0.469    -0.862    -0.159    -0.247
+  110-119    96.665      -0.034    -0.386    -0.771    -0.259    -0.228
+  120-129    96.900      +0.012    -0.273    -0.466    -0.141    -0.060
+  130-139    97.048      +0.029    -0.122    -0.374    -0.090    -0.037
+  140-149    97.154      +0.113    -0.094    -0.186    +0.016    +0.014
+  150-159    97.199      +0.139    +0.038    -0.001    +0.143    +0.073
+  160-169    97.421      +0.110    -0.015    -0.056    +0.051    +0.023
+
+  MAPQ>=25: accuracy(strategy) - accuracy(aln)
+  bin       aln acc        mem3       hry    hrydef        dk    strobe
+   20- 29    56.704     -56.704   -10.136   -33.887   -14.379   -10.499
+   30- 39    73.377      -4.240    -8.029   -16.709    -9.167    -7.499
+   40- 49    78.851      +1.117    -5.872    -7.883    -6.352    -6.690
+   50- 59    83.189      -1.704    -6.173    -7.029    -6.188    -7.028
+   60- 69    86.494      -1.226    -6.879    -6.972    -6.648    -7.396
+   70- 79    88.904      -1.103    -7.147    -6.624    -6.544    -6.892
+   80- 89    90.176      -0.833    -6.992    -6.209    -6.224    -6.064
+   90- 99    91.439      -0.763    -6.997    -6.040    -6.152    -5.392
+  100-109    92.205      -0.686    -6.602    -5.504    -5.722    -4.647
+  110-119    92.476      -1.403    -6.342    -5.291    -5.461    -4.192
+  120-129    92.984      -1.256    -6.050    -5.004    -5.169    -3.740
+  130-139    93.260      -1.284    -5.835    -4.824    -5.058    -3.502
+  140-149    93.504      -1.236    -5.774    -4.673    -4.885    -3.277
+  150-159    93.551      -1.106    -5.529    -4.458    -4.663    -3.088
+  160-169    93.850      -1.137    -5.479    -4.496    -4.658    -3.129
+
+
+5. PRECISION/ACCURACY AT EVERY MAPQ THRESHOLD (MAPQ scales differ between mappers)
+==================================================================================
+
+--- aln ---
+  MAPQ>=0   precision  93.370  accuracy  93.334  kept  99.962
+  MAPQ>=1   precision  99.812  accuracy  90.777  kept  90.948
+  MAPQ>=5   precision  99.836  accuracy  90.705  kept  90.854
+  MAPQ>=10  precision  99.872  accuracy  90.473  kept  90.589
+  MAPQ>=15  precision  99.900  accuracy  90.027  kept  90.117
+  MAPQ>=20  precision  99.921  accuracy  89.194  kept  89.265
+  MAPQ>=25  precision  99.993  accuracy  86.731  kept  86.737
+  MAPQ>=37  precision  99.993  accuracy  86.711  kept  86.718
+  best accuracy with precision >= 99.90%: 89.836
+  best accuracy with precision >= 99.95%: 86.731
+  best accuracy with precision >= 99.99%: 86.731
+
+--- mem3 ---
+  MAPQ>=0   precision  94.595  accuracy  87.891  kept  92.913
+  MAPQ>=1   precision  99.839  accuracy  85.323  kept  85.460
+  MAPQ>=5   precision  99.873  accuracy  84.989  kept  85.097
+  MAPQ>=10  precision  99.933  accuracy  83.772  kept  83.828
+  MAPQ>=15  precision  99.962  accuracy  82.925  kept  82.956
+  MAPQ>=20  precision  99.969  accuracy  82.562  kept  82.588
+  MAPQ>=25  precision  99.978  accuracy  81.827  kept  81.845
+  MAPQ>=30  precision  99.984  accuracy  80.966  kept  80.978
+  MAPQ>=37  precision  99.986  accuracy  79.940  kept  79.951
+  MAPQ>=40  precision  99.987  accuracy  79.517  kept  79.528
+  MAPQ>=50  precision  99.987  accuracy  78.180  kept  78.190
+  MAPQ>=60  precision  99.988  accuracy  76.811  kept  76.820
+  best accuracy with precision >= 99.90%: 84.405
+  best accuracy with precision >= 99.95%: 83.168
+  best accuracy with precision >= 99.99%: 0.000
+
+--- hry ---
+  MAPQ>=0   precision  94.361  accuracy  92.744  kept  98.286
+  MAPQ>=1   precision  98.322  accuracy  90.593  kept  92.139
+  MAPQ>=5   precision  98.670  accuracy  89.000  kept  90.199
+  MAPQ>=10  precision  99.474  accuracy  86.430  kept  86.887
+  MAPQ>=15  precision  99.790  accuracy  84.357  kept  84.535
+  MAPQ>=20  precision  99.895  accuracy  82.298  kept  82.384
+  MAPQ>=25  precision  99.942  accuracy  80.075  kept  80.122
+  MAPQ>=30  precision  99.964  accuracy  77.741  kept  77.769
+  MAPQ>=37  precision  99.981  accuracy  74.117  kept  74.131
+  MAPQ>=40  precision  99.987  accuracy  72.860  kept  72.870
+  MAPQ>=50  precision  99.996  accuracy  69.152  kept  69.155
+  MAPQ>=60  precision  99.996  accuracy  69.034  kept  69.036
+  best accuracy with precision >= 99.90%: 81.769
+  best accuracy with precision >= 99.95%: 79.184
+  best accuracy with precision >= 99.99%: 72.065
+
+--- hrydef ---
+  MAPQ>=0   precision  93.622  accuracy  90.779  kept  96.963
+  MAPQ>=1   precision  97.849  accuracy  88.663  kept  90.612
+  MAPQ>=5   precision  98.421  accuracy  87.120  kept  88.518
+  MAPQ>=10  precision  99.417  accuracy  84.814  kept  85.311
+  MAPQ>=15  precision  99.772  accuracy  82.930  kept  83.119
+  MAPQ>=20  precision  99.872  accuracy  80.852  kept  80.956
+  MAPQ>=25  precision  99.906  accuracy  78.357  kept  78.431
+  MAPQ>=30  precision  99.916  accuracy  75.242  kept  75.305
+  MAPQ>=37  precision  99.917  accuracy  70.423  kept  70.481
+  MAPQ>=40  precision  99.916  accuracy  69.446  kept  69.505
+  MAPQ>=50  precision  99.916  accuracy  68.949  kept  69.007
+  MAPQ>=60  precision  99.916  accuracy  68.938  kept  68.996
+  best accuracy with precision >= 99.90%: 78.933
+  best accuracy with precision >= 99.95%: 0.000
+  best accuracy with precision >= 99.99%: 0.000
+
+--- dk ---
+  MAPQ>=0   precision  94.081  accuracy  92.862  kept  98.704
+  MAPQ>=1   precision  98.232  accuracy  90.647  kept  92.278
+  MAPQ>=5   precision  98.549  accuracy  89.024  kept  90.335
+  MAPQ>=10  precision  99.443  accuracy  86.469  kept  86.953
+  MAPQ>=15  precision  99.780  accuracy  84.518  kept  84.705
+  MAPQ>=20  precision  99.861  accuracy  82.489  kept  82.604
+  MAPQ>=25  precision  99.892  accuracy  80.246  kept  80.333
+  MAPQ>=30  precision  99.900  accuracy  77.820  kept  77.898
+  MAPQ>=37  precision  99.899  accuracy  74.391  kept  74.465
+  MAPQ>=40  precision  99.899  accuracy  73.773  kept  73.848
+  MAPQ>=50  precision  99.899  accuracy  73.415  kept  73.489
+  MAPQ>=60  precision  99.899  accuracy  73.406  kept  73.481
+  best accuracy with precision >= 99.90%: 76.723
+  best accuracy with precision >= 99.95%: 0.000
+  best accuracy with precision >= 99.99%: 0.000
+
+--- strobe ---
+  MAPQ>=0   precision  93.501  accuracy  91.213  kept  97.553
+  MAPQ>=1   precision  98.017  accuracy  89.080  kept  90.882
+  MAPQ>=5   precision  98.467  accuracy  87.606  kept  88.969
+  MAPQ>=10  precision  99.487  accuracy  85.601  kept  86.043
+  MAPQ>=15  precision  99.756  accuracy  84.163  kept  84.369
+  MAPQ>=20  precision  99.848  accuracy  82.674  kept  82.800
+  MAPQ>=25  precision  99.873  accuracy  81.195  kept  81.299
+  MAPQ>=30  precision  99.879  accuracy  79.923  kept  80.020
+  MAPQ>=37  precision  99.880  accuracy  78.847  kept  78.942
+  MAPQ>=40  precision  99.880  accuracy  78.690  kept  78.784
+  MAPQ>=50  precision  99.880  accuracy  78.645  kept  78.739
+  MAPQ>=60  precision  99.880  accuracy  78.645  kept  78.739
+  best accuracy with precision >= 99.90%: 0.000
+  best accuracy with precision >= 99.95%: 0.000
+  best accuracy with precision >= 99.99%: 0.000
+  (mem3 never reaches 99.99% precision at any MAPQ, hence 0.000)
+
+
+6. POSITION TOLERANCE CHECK (is HRY's deficit near misses? no)
+==============================================================
+  aln     tol=0 acc 93.334   tol=100 acc 93.369
+  mem3    tol=0 acc 87.891   tol=100 acc 87.928
+  hry     tol=0 acc 92.744   tol=100 acc 92.776
+  dk      tol=0 acc 92.862   tol=100 acc 92.898
+  strobe  tol=0 acc 91.213   tol=100 acc 91.248
+
+
+7. SOFT CLIPPING (why the scorer now uses the unclipped start)
+==============================================================
+big.aln.sam                              mapped  1499428  clipped  0.000%  (leading  0.000%, trailing  0.000%)  <64bp clipped  0.000%
+big.mem.sam                              mapped  1393692  clipped  0.007%  (leading  0.004%, trailing  0.004%)  <64bp clipped  0.015%
+big.hry.sam                              mapped  1474283  clipped  0.590%  (leading  0.289%, trailing  0.330%)  <64bp clipped  1.100%
+big.hrydef.sam                           mapped  1454450  clipped  0.835%  (leading  0.430%, trailing  0.464%)  <64bp clipped  1.627%
+big.dk.sam                               mapped  1480564  clipped  0.582%  (leading  0.298%, trailing  0.329%)  <64bp clipped  1.150%
+big.strobe.sam                           mapped  1463299  clipped  0.681%  (leading  0.342%, trailing  0.375%)  <64bp clipped  1.402%
+
+
+8. HRY WITH THE PAPER'S ALIGNMENT-SCORE FILTER (AS>=60), SIMULATED SET, MAPQ>=0
+===============================================================================
+  (max AS for an L bp read is 2L+20, so a 20 bp read passes only as a perfect end-to-end match)
+  bin       reads  mapped%  acc%   | AS>=60: mapped%  acc%
+   20- 29  100000   90.93  73.610 |          82.20  68.476
+   30- 39  100000   94.56  83.195 |          93.99  83.151
+   40- 49  100000   96.36  87.985 |          96.31  87.985
+   50- 59  100000   97.55  91.193 |          97.54  91.193
+   60- 69  100000   98.19  92.933 |          98.19  92.933
+   70- 79  100000   98.85  94.265 |          98.85  94.265
+   80- 89  100000   99.18  94.847 |          99.18  94.847
+   90- 99  100000   99.41  95.528 |          99.41  95.528
+  100-109  100000   99.57  96.062 |          99.57  96.062
+  110-119  100000   99.70  96.279 |          99.70  96.279
+  120-129  100000   99.99  96.627 |          99.99  96.627
+  130-139  100000  100.00  96.926 |         100.00  96.926
+  140-149  100000  100.00  97.060 |         100.00  97.060
+  150-159  100000  100.00  97.237 |         100.00  97.237
+  160-169  100000  100.00  97.406 |         100.00  97.406
+  bwa aln, same bins 20-29 / 30-39: 75.786 / 83.957
+
+
+9. HYBRID CURVES (short arm below the cutoff, long arm at or above)
+===================================================================
+
+--- aln + mem3, MAPQ>=0 ---
+hybrid accuracy (correct/total), tol=0 mapq>=0, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     87.8910      -5.4432      +0.0000   = all long arm
+      40     93.3125      -0.0217      +5.4215   
+      64     93.3474      +0.0132      +5.4564   
+     100     93.3597      +0.0255      +5.4687   
+     170     93.3342      +0.0000      +5.4432   = all short arm
+  (all-short 93.3342   all-long 87.8910)
+
+--- aln + mem3, MAPQ>=25 ---
+hybrid accuracy (correct/total), tol=0 mapq>=25, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     81.8267      -4.9043      +0.0000   = all long arm
+      40     85.8896      -0.8413      +4.0629   
+      64     85.9622      -0.7687      +4.1355   
+     100     86.1904      -0.5405      +4.3637   
+     170     86.7309      +0.0000      +4.9043   = all short arm
+  (all-short 86.7309   all-long 81.8267)
+
+--- HRY + mem3, MAPQ>=0 ---
+hybrid accuracy (correct/total), tol=0 mapq>=0, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     87.8910      -4.8525      +0.0000   = all long arm
+      40     93.1167      +0.3731      +5.2257   
+      64     93.0304      +0.2869      +5.1394   
+     100     92.8571      +0.1136      +4.9661   
+     170     92.7435      +0.0000      +4.8525   = all short arm
+  (all-short 92.7435   all-long 87.8910)
+
+--- HRY + mem3, MAPQ>=25 ---
+hybrid accuracy (correct/total), tol=0 mapq>=25, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     81.8267      +1.7515      +0.0000   = all long arm
+      40     84.6786      +4.6034      +2.8519   
+      64     83.7730      +3.6978      +1.9463   
+     100     82.3087      +2.2335      +0.4821   
+     170     80.0752      +0.0000      -1.7515   = all short arm
+  (all-short 80.0752   all-long 81.8267)
+
+--- aln + HRY, MAPQ>=0 ---
+hybrid accuracy (correct/total), tol=0 mapq>=0, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     92.7435      -0.5907      +0.0000   = all long arm
+      40     92.9394      -0.3948      +0.1959   
+      64     93.0605      -0.2737      +0.3170   
+     100     93.2461      -0.0881      +0.5026   
+     170     93.3342      +0.0000      +0.5907   = all short arm
+  (all-short 93.3342   all-long 92.7435)
+
+--- aln + HRY, MAPQ>=25 ---
+hybrid accuracy (correct/total), tol=0 mapq>=25, 1500000 reads
+  cutoff   accuracy%   vs all-short   vs all-long      note
+       0     80.0752      -6.6557      +0.0000   = all long arm
+      40     81.2862      -5.4447      +1.2110   
+      64     82.2644      -4.4665      +2.1892   
+     100     83.9569      -2.7741      +3.8817   
+     170     86.7309      +0.0000      +6.6557   = all short arm
+  (all-short 86.7309   all-long 80.0752)
+
+
+10. REFERENCE BIAS AT HETEROZYGOUS SITES
+========================================
+
+--- control: perfect mapper (alleles at the true positions; damage + sequencing error only) ---
+sim15M.fq   mapq>=0 trim=0
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    23093    23057      131    0.49961   +0.00039
+  transition      55416    55226       26    0.49914   +0.00086
+  ALL             78509    78283      157    0.49928   +0.00072
+  --- transversion alt_frac by read length ---
+     20- 29  n=    778  alt_frac  0.49357  bias +0.00643
+     30- 39  n=   1138  alt_frac  0.49209  bias +0.00791
+     40- 49  n=   1433  alt_frac  0.50384  bias -0.00384
+     50- 59  n=   1727  alt_frac  0.50608  bias -0.00608
+     60- 69  n=   2142  alt_frac  0.50000  bias +0.00000
+     70- 79  n=   2387  alt_frac  0.48680  bias +0.01320
+     80- 89  n=   2806  alt_frac  0.50071  bias -0.00071
+     90- 99  n=   3074  alt_frac  0.51106  bias -0.01106
+    100-109  n=   3378  alt_frac  0.51865  bias -0.01865
+    110-119  n=   3779  alt_frac  0.48928  bias +0.01072
+    120-129  n=   4067  alt_frac  0.48857  bias +0.01143
+    130-139  n=   4378  alt_frac  0.49680  bias +0.00320
+    140-149  n=   4771  alt_frac  0.49864  bias +0.00136
+    150-159  n=   4918  alt_frac  0.50752  bias -0.00752
+    160-169  n=   5374  alt_frac  0.49684  bias +0.00316
+
+--- aln, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22859    21695      126    0.48694   +0.01306
+  transition      54715    51753       25    0.48609   +0.01391
+  ALL             77574    73448      151    0.48634   +0.01366
+  --- transversion alt_frac by read length ---
+     20- 29  n=    568  alt_frac  0.43134  bias +0.06866
+     30- 39  n=    984  alt_frac  0.45020  bias +0.04980
+     40- 49  n=   1306  alt_frac  0.48315  bias +0.01685
+     50- 59  n=   1583  alt_frac  0.48326  bias +0.01674
+     60- 69  n=   2061  alt_frac  0.48811  bias +0.01189
+     70- 79  n=   2332  alt_frac  0.47770  bias +0.02230
+     80- 89  n=   2727  alt_frac  0.48808  bias +0.01192
+     90- 99  n=   3002  alt_frac  0.49900  bias +0.00100
+    100-109  n=   3309  alt_frac  0.50922  bias -0.00922
+    110-119  n=   3689  alt_frac  0.47872  bias +0.02128
+    120-129  n=   3981  alt_frac  0.47727  bias +0.02273
+    130-139  n=   4293  alt_frac  0.48521  bias +0.01479
+    140-149  n=   4663  alt_frac  0.48981  bias +0.01019
+    150-159  n=   4802  alt_frac  0.49667  bias +0.00333
+    160-169  n=   5254  alt_frac  0.48706  bias +0.01294
+
+--- mem3, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22593    21326      118    0.48558   +0.01442
+  transition      54014    50925       24    0.48528   +0.01472
+  ALL             76607    72251      142    0.48537   +0.01463
+  --- transversion alt_frac by read length ---
+     30- 39  n=    706  alt_frac  0.29887  bias +0.20113
+     40- 49  n=   1275  alt_frac  0.46196  bias +0.03804
+     50- 59  n=   1575  alt_frac  0.47492  bias +0.02508
+     60- 69  n=   2054  alt_frac  0.47809  bias +0.02191
+     70- 79  n=   2328  alt_frac  0.47552  bias +0.02448
+     80- 89  n=   2725  alt_frac  0.48624  bias +0.01376
+     90- 99  n=   2988  alt_frac  0.49799  bias +0.00201
+    100-109  n=   3312  alt_frac  0.50936  bias -0.00936
+    110-119  n=   3713  alt_frac  0.47994  bias +0.02006
+    120-129  n=   4002  alt_frac  0.48126  bias +0.01874
+    130-139  n=   4315  alt_frac  0.48598  bias +0.01402
+    140-149  n=   4712  alt_frac  0.49194  bias +0.00806
+    150-159  n=   4868  alt_frac  0.50041  bias -0.00041
+    160-169  n=   5346  alt_frac  0.49196  bias +0.00804
+
+--- HRY, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22820    21365      124    0.48354   +0.01646
+  transition      54497    51146       25    0.48414   +0.01586
+  ALL             77317    72511      149    0.48396   +0.01604
+  --- transversion alt_frac by read length ---
+     20- 29  n=    433  alt_frac  0.27021  bias +0.22979
+     30- 39  n=    904  alt_frac  0.42035  bias +0.07965
+     40- 49  n=   1281  alt_frac  0.46526  bias +0.03474
+     50- 59  n=   1549  alt_frac  0.47515  bias +0.02485
+     60- 69  n=   2016  alt_frac  0.47917  bias +0.02083
+     70- 79  n=   2289  alt_frac  0.47138  bias +0.02862
+     80- 89  n=   2703  alt_frac  0.48095  bias +0.01905
+     90- 99  n=   2954  alt_frac  0.49729  bias +0.00271
+    100-109  n=   3293  alt_frac  0.50744  bias -0.00744
+    110-119  n=   3678  alt_frac  0.47961  bias +0.02039
+    120-129  n=   3978  alt_frac  0.48039  bias +0.01961
+    130-139  n=   4283  alt_frac  0.48471  bias +0.01529
+    140-149  n=   4679  alt_frac  0.48899  bias +0.01101
+    150-159  n=   4827  alt_frac  0.49824  bias +0.00176
+    160-169  n=   5318  alt_frac  0.49022  bias +0.00978
+
+--- dk, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22879    21393      123    0.48322   +0.01678
+  transition      54548    51014       23    0.48326   +0.01674
+  ALL             77427    72407      146    0.48325   +0.01675
+  --- transversion alt_frac by read length ---
+     20- 29  n=    434  alt_frac  0.26037  bias +0.23963
+     30- 39  n=    902  alt_frac  0.41796  bias +0.08204
+     40- 49  n=   1268  alt_frac  0.46293  bias +0.03707
+     50- 59  n=   1555  alt_frac  0.47138  bias +0.02862
+     60- 69  n=   2019  alt_frac  0.47746  bias +0.02254
+     70- 79  n=   2305  alt_frac  0.47289  bias +0.02711
+     80- 89  n=   2690  alt_frac  0.48290  bias +0.01710
+     90- 99  n=   2969  alt_frac  0.49714  bias +0.00286
+    100-109  n=   3308  alt_frac  0.50695  bias -0.00695
+    110-119  n=   3677  alt_frac  0.47648  bias +0.02352
+    120-129  n=   3986  alt_frac  0.47842  bias +0.02158
+    130-139  n=   4295  alt_frac  0.48498  bias +0.01502
+    140-149  n=   4685  alt_frac  0.49072  bias +0.00928
+    150-159  n=   4844  alt_frac  0.49876  bias +0.00124
+    160-169  n=   5335  alt_frac  0.49110  bias +0.00890
+
+--- strobe, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22810    21045      116    0.47988   +0.02012
+  transition      54313    50035       25    0.47950   +0.02050
+  ALL             77123    71080      141    0.47961   +0.02039
+  --- transversion alt_frac by read length ---
+     20- 29  n=    300  alt_frac  0.14333  bias +0.35667
+     30- 39  n=    793  alt_frac  0.34300  bias +0.15700
+     40- 49  n=   1217  alt_frac  0.44782  bias +0.05218
+     50- 59  n=   1520  alt_frac  0.46184  bias +0.03816
+     60- 69  n=   1983  alt_frac  0.46999  bias +0.03001
+     70- 79  n=   2292  alt_frac  0.46815  bias +0.03185
+     80- 89  n=   2683  alt_frac  0.47931  bias +0.02069
+     90- 99  n=   2953  alt_frac  0.49441  bias +0.00559
+    100-109  n=   3294  alt_frac  0.50607  bias -0.00607
+    110-119  n=   3678  alt_frac  0.47662  bias +0.02338
+    120-129  n=   3991  alt_frac  0.47883  bias +0.02117
+    130-139  n=   4294  alt_frac  0.48486  bias +0.01514
+    140-149  n=   4692  alt_frac  0.48849  bias +0.01151
+    150-159  n=   4839  alt_frac  0.49886  bias +0.00114
+    160-169  n=   5326  alt_frac  0.49061  bias +0.00939
+
+--- aln + mem3, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22933    21871      129    0.48815   +0.01185
+  transition      54833    52183       25    0.48762   +0.01238
+  ALL             77766    74054      154    0.48777   +0.01223
+  --- transversion alt_frac by read length ---
+     20- 29  n=    568  alt_frac  0.43134  bias +0.06866
+     30- 39  n=    984  alt_frac  0.45020  bias +0.04980
+     40- 49  n=   1306  alt_frac  0.48315  bias +0.01685
+     50- 59  n=   1583  alt_frac  0.48326  bias +0.01674
+     60- 69  n=   2054  alt_frac  0.48247  bias +0.01753
+     70- 79  n=   2328  alt_frac  0.47552  bias +0.02448
+     80- 89  n=   2725  alt_frac  0.48624  bias +0.01376
+     90- 99  n=   2988  alt_frac  0.49799  bias +0.00201
+    100-109  n=   3312  alt_frac  0.50936  bias -0.00936
+    110-119  n=   3713  alt_frac  0.47994  bias +0.02006
+    120-129  n=   4002  alt_frac  0.48126  bias +0.01874
+    130-139  n=   4315  alt_frac  0.48598  bias +0.01402
+    140-149  n=   4712  alt_frac  0.49194  bias +0.00806
+    150-159  n=   4868  alt_frac  0.50041  bias -0.00041
+    160-169  n=   5346  alt_frac  0.49196  bias +0.00804
+
+--- HRY + mem3, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22913    21598      126    0.48523   +0.01477
+  transition      54769    51768       24    0.48592   +0.01408
+  ALL             77682    73366      150    0.48571   +0.01429
+  --- transversion alt_frac by read length ---
+     20- 29  n=    433  alt_frac  0.27021  bias +0.22979
+     30- 39  n=    904  alt_frac  0.42035  bias +0.07965
+     40- 49  n=   1281  alt_frac  0.46526  bias +0.03474
+     50- 59  n=   1549  alt_frac  0.47515  bias +0.02485
+     60- 69  n=   2035  alt_frac  0.47813  bias +0.02187
+     70- 79  n=   2328  alt_frac  0.47552  bias +0.02448
+     80- 89  n=   2725  alt_frac  0.48624  bias +0.01376
+     90- 99  n=   2988  alt_frac  0.49799  bias +0.00201
+    100-109  n=   3312  alt_frac  0.50936  bias -0.00936
+    110-119  n=   3713  alt_frac  0.47994  bias +0.02006
+    120-129  n=   4002  alt_frac  0.48126  bias +0.01874
+    130-139  n=   4315  alt_frac  0.48598  bias +0.01402
+    140-149  n=   4712  alt_frac  0.49194  bias +0.00806
+    150-159  n=   4868  alt_frac  0.50041  bias -0.00041
+    160-169  n=   5346  alt_frac  0.49196  bias +0.00804
+
+--- aln + HRY, MAPQ>=0 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    22840    21638      127    0.48649   +0.01351
+  transition      54561    51561       26    0.48587   +0.01413
+  ALL             77401    73199      153    0.48605   +0.01395
+  --- transversion alt_frac by read length ---
+     20- 29  n=    568  alt_frac  0.43134  bias +0.06866
+     30- 39  n=    984  alt_frac  0.45020  bias +0.04980
+     40- 49  n=   1306  alt_frac  0.48315  bias +0.01685
+     50- 59  n=   1583  alt_frac  0.48326  bias +0.01674
+     60- 69  n=   2035  alt_frac  0.48354  bias +0.01646
+     70- 79  n=   2289  alt_frac  0.47138  bias +0.02862
+     80- 89  n=   2703  alt_frac  0.48095  bias +0.01905
+     90- 99  n=   2954  alt_frac  0.49729  bias +0.00271
+    100-109  n=   3293  alt_frac  0.50744  bias -0.00744
+    110-119  n=   3678  alt_frac  0.47961  bias +0.02039
+    120-129  n=   3978  alt_frac  0.48039  bias +0.01961
+    130-139  n=   4283  alt_frac  0.48471  bias +0.01529
+    140-149  n=   4679  alt_frac  0.48899  bias +0.01101
+    150-159  n=   4827  alt_frac  0.49824  bias +0.00176
+    160-169  n=   5318  alt_frac  0.49022  bias +0.00978
+
+--- aln, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    21668    20858      120    0.49048   +0.00952
+  transition      51821    49553       23    0.48881   +0.01119
+  ALL             73489    70411      143    0.48931   +0.01069
+  --- transversion alt_frac by read length ---
+     20- 29  n=    400  alt_frac  0.41500  bias +0.08500
+     30- 39  n=    842  alt_frac  0.46318  bias +0.03682
+     40- 49  n=   1163  alt_frac  0.49871  bias +0.00129
+     50- 59  n=   1422  alt_frac  0.49437  bias +0.00563
+     60- 69  n=   1923  alt_frac  0.48934  bias +0.01066
+     70- 79  n=   2186  alt_frac  0.48399  bias +0.01601
+     80- 89  n=   2601  alt_frac  0.49289  bias +0.00711
+     90- 99  n=   2853  alt_frac  0.50158  bias -0.00158
+    100-109  n=   3182  alt_frac  0.51226  bias -0.01226
+    110-119  n=   3555  alt_frac  0.48017  bias +0.01983
+    120-129  n=   3852  alt_frac  0.47949  bias +0.02051
+    130-139  n=   4180  alt_frac  0.48684  bias +0.01316
+    140-149  n=   4534  alt_frac  0.49294  bias +0.00706
+    150-159  n=   4688  alt_frac  0.49872  bias +0.00128
+    160-169  n=   5145  alt_frac  0.48882  bias +0.01118
+
+--- mem3, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    21191    20207      113    0.48812   +0.01188
+  transition      50643    48055       22    0.48689   +0.01311
+  ALL             71834    68262      135    0.48725   +0.01275
+  --- transversion alt_frac by read length ---
+     30- 39  n=    630  alt_frac  0.30159  bias +0.19841
+     40- 49  n=   1145  alt_frac  0.47249  bias +0.02751
+     50- 59  n=   1360  alt_frac  0.48529  bias +0.01471
+     60- 69  n=   1864  alt_frac  0.48176  bias +0.01824
+     70- 79  n=   2139  alt_frac  0.48107  bias +0.01893
+     80- 89  n=   2559  alt_frac  0.48847  bias +0.01153
+     90- 99  n=   2806  alt_frac  0.49929  bias +0.00071
+    100-109  n=   3131  alt_frac  0.50974  bias -0.00974
+    110-119  n=   3487  alt_frac  0.47950  bias +0.02050
+    120-129  n=   3823  alt_frac  0.48208  bias +0.01792
+    130-139  n=   4127  alt_frac  0.48558  bias +0.01442
+    140-149  n=   4507  alt_frac  0.49612  bias +0.00388
+    150-159  n=   4676  alt_frac  0.50235  bias -0.00235
+    160-169  n=   5144  alt_frac  0.49339  bias +0.00661
+
+--- HRY, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    19909    18511       98    0.48181   +0.01819
+  transition      47348    43916       20    0.48120   +0.01880
+  ALL             67257    62427      118    0.48138   +0.01862
+  --- transversion alt_frac by read length ---
+     20- 29  n=    227  alt_frac  0.07489  bias +0.42511
+     30- 39  n=    646  alt_frac  0.36842  bias +0.13158
+     40- 49  n=   1004  alt_frac  0.47112  bias +0.02888
+     50- 59  n=   1247  alt_frac  0.46913  bias +0.03087
+     60- 69  n=   1661  alt_frac  0.46839  bias +0.03161
+     70- 79  n=   1962  alt_frac  0.46636  bias +0.03364
+     80- 89  n=   2314  alt_frac  0.47969  bias +0.02031
+     90- 99  n=   2562  alt_frac  0.49610  bias +0.00390
+    100-109  n=   2892  alt_frac  0.50864  bias -0.00864
+    110-119  n=   3207  alt_frac  0.47583  bias +0.02417
+    120-129  n=   3562  alt_frac  0.47782  bias +0.02218
+    130-139  n=   3831  alt_frac  0.48369  bias +0.01631
+    140-149  n=   4163  alt_frac  0.49027  bias +0.00973
+    150-159  n=   4347  alt_frac  0.50150  bias -0.00150
+    160-169  n=   4795  alt_frac  0.49030  bias +0.00970
+
+--- dk, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    20066    18695       99    0.48231   +0.01769
+  transition      47875    44264       20    0.48040   +0.01960
+  ALL             67941    62959      119    0.48097   +0.01903
+  --- transversion alt_frac by read length ---
+     20- 29  n=    215  alt_frac  0.18605  bias +0.31395
+     30- 39  n=    621  alt_frac  0.37037  bias +0.12963
+     40- 49  n=   1006  alt_frac  0.46521  bias +0.03479
+     50- 59  n=   1248  alt_frac  0.47196  bias +0.02804
+     60- 69  n=   1672  alt_frac  0.46830  bias +0.03170
+     70- 79  n=   1960  alt_frac  0.47041  bias +0.02959
+     80- 89  n=   2319  alt_frac  0.47520  bias +0.02480
+     90- 99  n=   2591  alt_frac  0.49286  bias +0.00714
+    100-109  n=   2913  alt_frac  0.50875  bias -0.00875
+    110-119  n=   3267  alt_frac  0.47230  bias +0.02770
+    120-129  n=   3592  alt_frac  0.47773  bias +0.02227
+    130-139  n=   3871  alt_frac  0.48308  bias +0.01692
+    140-149  n=   4217  alt_frac  0.49087  bias +0.00913
+    150-159  n=   4408  alt_frac  0.50204  bias -0.00204
+    160-169  n=   4861  alt_frac  0.49167  bias +0.00833
+
+--- strobe, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    20503    18943      103    0.48023   +0.01977
+  transition      48658    44640       21    0.47847   +0.02153
+  ALL             69161    63583      124    0.47899   +0.02101
+  --- transversion alt_frac by read length ---
+     20- 29  n=    248  alt_frac  0.14113  bias +0.35887
+     30- 39  n=    628  alt_frac  0.33917  bias +0.16083
+     40- 49  n=    984  alt_frac  0.46037  bias +0.03963
+     50- 59  n=   1248  alt_frac  0.46635  bias +0.03365
+     60- 69  n=   1696  alt_frac  0.47052  bias +0.02948
+     70- 79  n=   1945  alt_frac  0.46375  bias +0.03625
+     80- 89  n=   2348  alt_frac  0.47743  bias +0.02257
+     90- 99  n=   2607  alt_frac  0.49137  bias +0.00863
+    100-109  n=   2981  alt_frac  0.50755  bias -0.00755
+    110-119  n=   3323  alt_frac  0.47397  bias +0.02603
+    120-129  n=   3667  alt_frac  0.47641  bias +0.02359
+    130-139  n=   3959  alt_frac  0.48093  bias +0.01907
+    140-149  n=   4343  alt_frac  0.49137  bias +0.00863
+    150-159  n=   4494  alt_frac  0.50045  bias -0.00045
+    160-169  n=   4975  alt_frac  0.48965  bias +0.01035
+
+--- aln + mem3, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    21437    20668      121    0.49087   +0.00913
+  transition      51264    49074       23    0.48909   +0.01091
+  ALL             72701    69742      144    0.48961   +0.01039
+  --- transversion alt_frac by read length ---
+     20- 29  n=    400  alt_frac  0.41500  bias +0.08500
+     30- 39  n=    842  alt_frac  0.46318  bias +0.03682
+     40- 49  n=   1163  alt_frac  0.49871  bias +0.00129
+     50- 59  n=   1422  alt_frac  0.49437  bias +0.00563
+     60- 69  n=   1879  alt_frac  0.48483  bias +0.01517
+     70- 79  n=   2139  alt_frac  0.48107  bias +0.01893
+     80- 89  n=   2559  alt_frac  0.48847  bias +0.01153
+     90- 99  n=   2806  alt_frac  0.49929  bias +0.00071
+    100-109  n=   3131  alt_frac  0.50974  bias -0.00974
+    110-119  n=   3487  alt_frac  0.47950  bias +0.02050
+    120-129  n=   3823  alt_frac  0.48208  bias +0.01792
+    130-139  n=   4127  alt_frac  0.48558  bias +0.01442
+    140-149  n=   4507  alt_frac  0.49612  bias +0.00388
+    150-159  n=   4676  alt_frac  0.50235  bias -0.00235
+    160-169  n=   5144  alt_frac  0.49339  bias +0.00661
+
+--- HRY + mem3, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    21230    20076      111    0.48603   +0.01397
+  transition      50725    47897       22    0.48566   +0.01434
+  ALL             71955    67973      133    0.48577   +0.01423
+  --- transversion alt_frac by read length ---
+     20- 29  n=    227  alt_frac  0.07489  bias +0.42511
+     30- 39  n=    646  alt_frac  0.36842  bias +0.13158
+     40- 49  n=   1004  alt_frac  0.47112  bias +0.02888
+     50- 59  n=   1247  alt_frac  0.46913  bias +0.03087
+     60- 69  n=   1783  alt_frac  0.47392  bias +0.02608
+     70- 79  n=   2139  alt_frac  0.48107  bias +0.01893
+     80- 89  n=   2559  alt_frac  0.48847  bias +0.01153
+     90- 99  n=   2806  alt_frac  0.49929  bias +0.00071
+    100-109  n=   3131  alt_frac  0.50974  bias -0.00974
+    110-119  n=   3487  alt_frac  0.47950  bias +0.02050
+    120-129  n=   3823  alt_frac  0.48208  bias +0.01792
+    130-139  n=   4127  alt_frac  0.48558  bias +0.01442
+    140-149  n=   4507  alt_frac  0.49612  bias +0.00388
+    150-159  n=   4676  alt_frac  0.50235  bias -0.00235
+    160-169  n=   5144  alt_frac  0.49339  bias +0.00661
+
+--- aln + HRY, MAPQ>=25 ---
+  class          ref      alt    other   alt_frac   bias(0.5-alt_frac)
+  transversion    20116    19103      108    0.48709   +0.01291
+  transition      47887    45093       21    0.48498   +0.01502
+  ALL             68003    64196      129    0.48560   +0.01440
+  --- transversion alt_frac by read length ---
+     20- 29  n=    400  alt_frac  0.41500  bias +0.08500
+     30- 39  n=    842  alt_frac  0.46318  bias +0.03682
+     40- 49  n=   1163  alt_frac  0.49871  bias +0.00129
+     50- 59  n=   1422  alt_frac  0.49437  bias +0.00563
+     60- 69  n=   1757  alt_frac  0.48036  bias +0.01964
+     70- 79  n=   1962  alt_frac  0.46636  bias +0.03364
+     80- 89  n=   2314  alt_frac  0.47969  bias +0.02031
+     90- 99  n=   2562  alt_frac  0.49610  bias +0.00390
+    100-109  n=   2892  alt_frac  0.50864  bias -0.00864
+    110-119  n=   3207  alt_frac  0.47583  bias +0.02417
+    120-129  n=   3562  alt_frac  0.47782  bias +0.02218
+    130-139  n=   3831  alt_frac  0.48369  bias +0.01631
+    140-149  n=   4163  alt_frac  0.49027  bias +0.00973
+    150-159  n=   4347  alt_frac  0.50150  bias -0.00150
+    160-169  n=   4795  alt_frac  0.49030  bias +0.00970
+
+--- old rule (reads on any chromosome counted), MAPQ>=25 ---
+  aln          tv bias old +0.00952   new +0.00952
+  mem          tv bias old +0.01188   new +0.01188
+  h_aln_mem    tv bias old +0.00913   new +0.00913
+
+--- transversion bias per length bin, MAPQ>=25 ---
+transversion bias (0.5 - alt_frac), MAPQ>=25; negative = anti-reference
+  bin                   aln             mem             HRY              DK
+   20-29   +0.08500 (n=400)               -+0.42511 (n=227)+0.31395 (n=215)
+   30-39   +0.03682 (n=842)+0.19841 (n=630)+0.13158 (n=646)+0.12963 (n=621)
+   40-49   +0.00129 (n=1163)+0.02751 (n=1145)+0.02888 (n=1004)+0.03479 (n=1006)
+   50-59   +0.00563 (n=1422)+0.01471 (n=1360)+0.03087 (n=1247)+0.02804 (n=1248)
+   60-69   +0.01066 (n=1923)+0.01824 (n=1864)+0.03161 (n=1661)+0.03170 (n=1672)
+   70-79   +0.01601 (n=2186)+0.01893 (n=2139)+0.03364 (n=1962)+0.02959 (n=1960)
+   80-89   +0.00711 (n=2601)+0.01153 (n=2559)+0.02031 (n=2314)+0.02480 (n=2319)
+   90-99   -0.00158 (n=2853)+0.00071 (n=2806)+0.00390 (n=2562)+0.00714 (n=2591)
+  100-109  -0.01226 (n=3182)-0.00974 (n=3131)-0.00864 (n=2892)-0.00875 (n=2913)
+  110-119  +0.01983 (n=3555)+0.02050 (n=3487)+0.02417 (n=3207)+0.02770 (n=3267)
+  120-129  +0.02051 (n=3852)+0.01792 (n=3823)+0.02218 (n=3562)+0.02227 (n=3592)
+  130-139  +0.01316 (n=4180)+0.01442 (n=4127)+0.01631 (n=3831)+0.01692 (n=3871)
+  140-149  +0.00706 (n=4534)+0.00388 (n=4507)+0.00973 (n=4163)+0.00913 (n=4217)
+  150-159  +0.00128 (n=4688)-0.00235 (n=4676)-0.00150 (n=4347)-0.00204 (n=4408)
+  160-169  +0.01118 (n=5145)+0.00661 (n=5144)+0.00970 (n=4795)+0.00833 (n=4861)
+
+--- paired bootstrap of transversion bias, MAPQ>=25 ---
+paired bootstrap over 10828 het sites, B=2000
+  aln        bias +0.00952   95% CI [+0.00467, +0.01446]
+  HRY        bias +0.01819   95% CI [+0.01307, +0.02327]
+  mem3       bias +0.01188   95% CI [+0.00691, +0.01686]
+  DK         bias +0.01769   95% CI [+0.01241, +0.02278]
+  strobealign bias +0.01977   95% CI [+0.01466, +0.02492]
+  aln+mem3   bias +0.00913   95% CI [+0.00425, +0.01402]
+  HRY+mem3   bias +0.01397   95% CI [+0.00899, +0.01905]
+  aln+HRY    bias +0.01291   95% CI [+0.00782, +0.01794]
+  --- paired differences (negative = first has LESS bias) ---
+  aln        - HRY         -0.00867   95% CI [-0.01052, -0.00684]   SIGNIFICANT
+  aln        - mem3        -0.00236   95% CI [-0.00342, -0.00120]   SIGNIFICANT
+  aln        - DK          -0.00816   95% CI [-0.00994, -0.00646]   SIGNIFICANT
+  aln        - strobealign  -0.01025   95% CI [-0.01184, -0.00866]   SIGNIFICANT
+  aln        - aln+mem3    +0.00039   95% CI [-0.00045, +0.00122]   not significant
+  aln        - HRY+mem3    -0.00445   95% CI [-0.00556, -0.00332]   SIGNIFICANT
+  aln        - aln+HRY     -0.00339   95% CI [-0.00502, -0.00179]   SIGNIFICANT
+  HRY        - mem3        +0.00631   95% CI [+0.00464, +0.00807]   SIGNIFICANT
+  HRY        - DK          +0.00051   95% CI [-0.00053, +0.00154]   not significant
+  HRY        - strobealign  -0.00158   95% CI [-0.00294, -0.00020]   SIGNIFICANT
+  HRY        - aln+mem3    +0.00906   95% CI [+0.00742, +0.01082]   SIGNIFICANT
+  HRY        - HRY+mem3    +0.00422   95% CI [+0.00274, +0.00579]   SIGNIFICANT
+  HRY        - aln+HRY     +0.00528   95% CI [+0.00450, +0.00606]   SIGNIFICANT
+  mem3       - DK          -0.00580   95% CI [-0.00738, -0.00421]   SIGNIFICANT
+  mem3       - strobealign  -0.00789   95% CI [-0.00929, -0.00649]   SIGNIFICANT
+  mem3       - aln+mem3    +0.00275   95% CI [+0.00207, +0.00346]   SIGNIFICANT
+  mem3       - HRY+mem3    -0.00208   95% CI [-0.00278, -0.00143]   SIGNIFICANT
+  mem3       - aln+HRY     -0.00103   95% CI [-0.00271, +0.00060]   not significant
+  DK         - strobealign  -0.00209   95% CI [-0.00329, -0.00085]   SIGNIFICANT
+  DK         - aln+mem3    +0.00855   95% CI [+0.00697, +0.01022]   SIGNIFICANT
+  DK         - HRY+mem3    +0.00372   95% CI [+0.00224, +0.00526]   SIGNIFICANT
+  DK         - aln+HRY     +0.00477   95% CI [+0.00363, +0.00598]   SIGNIFICANT
+  strobealign - aln+mem3    +0.01064   95% CI [+0.00919, +0.01206]   SIGNIFICANT
+  strobealign - HRY+mem3    +0.00580   95% CI [+0.00446, +0.00714]   SIGNIFICANT
+  strobealign - aln+HRY     +0.00686   95% CI [+0.00540, +0.00830]   SIGNIFICANT
+  aln+mem3   - HRY+mem3    -0.00484   95% CI [-0.00555, -0.00412]   SIGNIFICANT
+  aln+mem3   - aln+HRY     -0.00378   95% CI [-0.00529, -0.00232]   SIGNIFICANT
+  HRY+mem3   - aln+HRY     +0.00105   95% CI [-0.00063, +0.00267]   not significant
+
+
+11. SIMULATED SET: RUN TIME AND MEMORY (16 threads; NOT a speed benchmark)
+==========================================================================
+  strobealign rows include building the index in the run; mem3 includes a cold index load
+  (warm, the same run takes ~3 s: BENCHMARK_ACCURACY.md, bwa-mem3 v0.14.1 section).
+  aln     wall  0:37.78  peak RSS   5.5 GB  user  519.83 s
+  mem3    wall  0:30.76  peak RSS  13.1 GB  user   34.51 s
+  hry     wall  0:36.59  peak RSS  23.3 GB  user  331.68 s
+  hry50   wall  0:33.13  peak RSS  23.3 GB  user  335.82 s
+  hrydef  wall  0:22.10  peak RSS  13.9 GB  user  172.08 s
+  dk      wall  0:25.86  peak RSS  20.0 GB  user  235.93 s
+  strobe  wall  0:18.18  peak RSS  13.6 GB  user  154.98 s
+
+  (strobealign's per-step "Total time ..." lines are summed over all threads; "Total time mapping"
+   and "Total time indexing" are wall-clock.)
+
+--- hry time breakdown (strobealign -v) ---
+  Estimated read length: 94 bp
+  Read profile: canonical 100 nt  (modified from default)
+  Time reading reference: 3.14 s
+  Total time indexing: 25.60 s
+  Total time mapping: 7.67 s
+  Total time creating strobemers: 2.41 s
+  Total time finding hits (non-rescue mode): 40.73 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 14.06 s
+  Total time extending and pairing seeds: 59.58 s
+
+--- dk time breakdown (strobealign -v) ---
+  Estimated read length: 94 bp
+  Read profile: canonical 100 nt  (modified from default)
+  Time reading reference: 2.86 s
+  Total time indexing: 19.06 s
+  Total time mapping: 3.82 s
+  Total time creating strobemers: 2.44 s
+  Total time finding hits (non-rescue mode): 19.80 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 15.11 s
+  Total time extending and pairing seeds: 19.81 s
+
+--- strobe time breakdown (strobealign -v) ---
+  Estimated read length: 94 bp
+  Read profile: canonical 100 nt 
+  Time reading reference: 2.93 s
+  Total time indexing: 13.80 s
+  Total time mapping: 1.44 s
+  Total time creating strobemers: 2.19 s
+  Total time finding hits (non-rescue mode): 9.56 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 5.06 s
+  Total time extending and pairing seeds: 3.58 s
+
+
+12. REAL LIBRARIES: SPEED (-t 32, one run at a time, warm page cache)
+=====================================================================
+  == HRY index build (-r 50 -> short-read profile)
+  index: 41.70 s, peak 23.4 GB, 20G on disk
+  == sub100k (100000 reads)
+  bwa aln -t 32:            15.40 s, peak 3.7 GB
+  HRY --use-index run 1:   10.82 s, peak 20.9 GB
+  HRY --use-index run 2:   9.13 s, peak 20.9 GB
+  HRY --use-index run 3:   9.14 s, peak 20.9 GB
+  HRY index on the fly, -r estimated: 32.10 s, peak 23.4 GB
+  == p17_shuf1m (999552 reads)
+  bwa aln -t 32:            57.05 s, peak 6.7 GB
+  HRY --use-index run 1:   8.95 s, peak 21.6 GB
+  HRY --use-index run 2:   8.90 s, peak 21.6 GB
+  HRY --use-index run 3:   8.91 s, peak 21.6 GB
+  HRY index on the fly, -r estimated: 28.93 s, peak 23.4 GB
+  == p1_shuf1m (1000528 reads)
+  bwa aln -t 32:            138.69 s, peak 3.8 GB
+  HRY --use-index run 1:   14.46 s, peak 21.4 GB
+  HRY --use-index run 2:   14.27 s, peak 21.4 GB
+  HRY --use-index run 3:   14.38 s, peak 21.4 GB
+  HRY index on the fly, -r estimated: 33.03 s, peak 23.4 GB
+  == output identity: --use-index -r 50 vs on-the-fly with estimated -r (records only)
+  sub100k: 4136ce07 4136ce07 same
+  p17_shuf1m: 05558d36 05558d36 same
+  p1_shuf1m: 292629d6 292629d6 same
+  done
+
+  Summary (seconds; HRY = median of 3 runs with the saved index)
+                                         sub100k     p17 1M      p1 1M
+  bwa aln -t 32 (2026-11-15)               15.40      57.05     138.69
+  bwa aln -t 32 (2026-11-01)               15.3       56.1      149.1
+  strobealign-HRY, saved index              9.14       8.91      14.38
+  strobealign-HRY, index built in run      32.10      28.93      33.03
+  gpualn, GPU (2026-11-01)                  2.22      17.4        7.77
+  G-ALN 0.2.4 + scheme prefilter (11-01)    1.97       9.63       6.95
+  HRY speed-up over CPU bwa aln             1.7x       6.4x       9.6x
+  HRY vs gpualn                       4.1x slower  2.0x faster  1.9x slower
+  peak RSS bwa aln / HRY (GB)          3.7 / 20.9  6.7 / 21.6  3.8 / 21.4
+  HRY index: 41.7 s and 23.4 GB to build, 21,413,792,756 bytes on disk (hs37d5.fa.sti)
+
+  (strobealign's per-step "Total time ..." lines are summed over all threads; "Total time mapping"
+   and "Total time indexing" are wall-clock.)
+
+--- HRY sub100k time breakdown (run 3, saved index) ---
+  Reading index from /home/teemu/sorsa/adna_simbench/ref/hs37d5.fa.sti
+  Total time reading index: 2.15 s
+  Total time mapping: 4.08 s
+  Total time creating strobemers: 0.07 s
+  Total time finding hits (non-rescue mode): 0.38 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 0.37 s
+  Total time extending and pairing seeds: 17.45 s
+
+--- HRY p17_shuf1m time breakdown (run 3, saved index) ---
+  Reading index from /home/teemu/sorsa/adna_simbench/ref/hs37d5.fa.sti
+  Total time reading index: 2.20 s
+  Total time mapping: 3.79 s
+  Total time creating strobemers: 0.82 s
+  Total time finding hits (non-rescue mode): 10.80 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 10.37 s
+  Total time extending and pairing seeds: 57.42 s
+
+--- HRY p1_shuf1m time breakdown (run 3, saved index) ---
+  Reading index from /home/teemu/sorsa/adna_simbench/ref/hs37d5.fa.sti
+  Total time reading index: 2.23 s
+  Total time mapping: 9.21 s
+  Total time creating strobemers: 0.82 s
+  Total time finding hits (non-rescue mode): 4.00 s
+  Total time finding hits (rescue mode): 0.00 s
+  Total time chaining (non-rescue mode): 4.64 s
+  Total time extending and pairing seeds: 189.36 s
+
+
+13. REAL LIBRARIES: WHAT GETS REPORTED AS MAPPED
+================================================
+  sub100k     aln  reads  100000 | mapped   0.51%  MAPQ>=25   0.21%  MAPQ>=30   0.20% | soft-clipped   0.00% of mapped
+  sub100k     hry  reads  100000 | mapped  99.72%  MAPQ>=25   0.35%  MAPQ>=30   0.17% | soft-clipped  99.78% of mapped | AS>=60   0.28%  +MAPQ>=25   0.17%  +MAPQ>=30   0.15%
+  p17_shuf1m  aln  reads  999552 | mapped  94.42%  MAPQ>=25  68.96%  MAPQ>=30  68.74% | soft-clipped   0.00% of mapped
+  p17_shuf1m  hry  reads  999552 | mapped  95.45%  MAPQ>=25  63.27%  MAPQ>=30  58.72% | soft-clipped   7.10% of mapped | AS>=60  90.15%  +MAPQ>=25  63.26%  +MAPQ>=30  58.71%
+  p1_shuf1m   aln  reads 1000528 | mapped   0.20%  MAPQ>=25   0.14%  MAPQ>=30   0.13% | soft-clipped   0.00% of mapped
+  p1_shuf1m   hry  reads 1000528 | mapped  99.99%  MAPQ>=25   0.36%  MAPQ>=30   0.13% | soft-clipped  99.83% of mapped | AS>=60   0.18%  +MAPQ>=25   0.10%  +MAPQ>=30   0.09%
+
+  p1_shuf1m, HRY records with MAPQ>=25: 3,587; 72.7% soft-clipped, 70.8% with AS < 60; only 1,022
+  of these reads are mapped (any MAPQ) by bwa aln. Examples of HRY MAPQ>=25 records on reads bwa
+  aln leaves unmapped:
+    22:46372284   MAPQ 27  9S20M18S  47 bp  NM:i:0 AS:i:40
+    1:157958409   MAPQ 25  17M28S    45 bp  NM:i:0 AS:i:44
+    17:51508179   MAPQ 25  17M20S    37 bp  NM:i:0 AS:i:44
+    19:19335811   MAPQ 25  17S19M    36 bp  NM:i:0 AS:i:48
+    4:819975      MAPQ 25  30S19M    49 bp  NM:i:0 AS:i:48
+  strobealign reports its best local alignment for (almost) every read; on exogenous reads that
+  is a short exact hit with the rest clipped. MAPQ does not remove them; AS>=60 (the paper's
+  evaluation threshold) does.
+
+
+14. CAVEATS
+===========
+  - Simulated reads are all endogenous: exogenous behaviour is only seen in section 13 (no truth).
+  - SNVs only (no indels) in the simulation, so placement truth is exact; the paper's Mason indels
+    are not modelled. Divergence here is one person's real SNVs (~0.1%), the human-aDNA case; the
+    paper's 0.5-5% synthetic divergence favours HRY increasingly, and its CHM13 (human) 0.5% win
+    does not reproduce here (HRY -0.69 points at 40-49 bp). Not resolved without their pipeline.
+  - The paper's correctness rule (overlap AND AS>=60, rescored for bwa) differs from ours; the
+    overlap part is ruled out as the cause (section 6), the AS part penalises HRY's short reads
+    here (section 8) and bwa aln's 5+-mismatch alignments there.
+  - strobealign MAPQ and bwa MAPQ are on different scales; section 5 compares at equal precision.
+  - gpualn and G-ALN speed rows are from 2026-11-01 (GPU reserved today); the bwa aln rows were
+    re-measured and agree within 1-7%.
+  - adna_bench's compile rule uses `cargo build` (dev profile, opt-level 1); if the paper's timings
+    came from it they understate HRY's speed. Ours is a release build.
+
+FILES
+  Data, SAMs, logs:   /home/teemu/sorsa/adna_simbench/work   (simulated set)
+                      /home/teemu/sorsa/adna_simbench/speed  (real libraries)
+  Scripts:            cuda/tools/benchmark/ (hry_run.sh, hry_speed.sh, score_sam.py,
+                      mapq_curve.py, hybrid_curve.py, merge_hybrid.py, ref_bias.py,
+                      bias_by_len.py, bootstrap_bias.py, clipstats.py)
+  HRY source/binary:  /home/teemu/sorsa/hry/strobealign-hry (tag hry); authors' benchmark code in
+                      /home/teemu/sorsa/hry/adna_bench

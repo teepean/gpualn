@@ -565,6 +565,9 @@ bottleneck.
   nothing changes to 5 decimals (aln +0.00952, mem3 +0.01188); unfiltered aln moves +0.01312 ->
   +0.01306.
 
+Every number behind this section (per-bin tables for all six strategies, MAPQ curves, hybrid curves,
+full bias and bootstrap output, run logs): `cuda/HRY_BENCHMARK_RESULTS.txt`.
+
 Reproduce: `cuda/tools/benchmark/hry_run.sh` (simulated set; scoring with `score_sam.py`,
 `mapq_curve.py`, `hybrid_curve.py`, `merge_hybrid.py`, `ref_bias.py --dump`, `bootstrap_bias.py`,
 `bias_by_len.py`, `clipstats.py`) and `hry_speed.sh` (real libraries). The simulated set was

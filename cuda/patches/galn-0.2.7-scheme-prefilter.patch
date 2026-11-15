@@ -1,4 +1,4 @@
-From b43ed281176e340aa01821b5f3ba9448e6039737 Mon Sep 17 00:00:00 2001
+From 3a2fe791b7bcfaf05ab311a2fe33404af0bbda4f Mon Sep 17 00:00:00 2001
 From: teepean <tnatkinn@gmail.com>
 Date: Sun, 1 Nov 2026 09:59:59 +0200
 Subject: [PATCH] Prefilter: skip reads that provably have no alignment (search
@@ -33,7 +33,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/prefilter.cuh
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 5703b5f..c6ab48f 100644
+index 886c7a4..998e328 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -1,5 +1,12 @@
@@ -46,7 +46,7 @@ index 5703b5f..c6ab48f 100644
 +  without a hit are the slowest to search, so runs are 2-8x faster on our test libraries. `--no-prefilter`
 +  turns it off; `--verify` also re-runs every filtered read on the CPU.
 +
- ## 0.2.7 (2026-10-28)
+ ## 0.2.7 (2026-11-06)
  
  - New `galn samse -k INT`: keeps multi-mapping reads in the BAM file like `bowtie2 -k`. Up to INT records per read, best
 diff --git a/NOTICE.md b/NOTICE.md
@@ -65,7 +65,7 @@ index 5378f88..d4f6505 100644
    `ksort.h`) are unmodified copies from BWA 0.7.19 carrying MIT licence headers.
  - `galn samse` / `galn sampe` use BWA 0.7.19's own code: `src/samse/bwa_upstream/` holds unmodified copies
 diff --git a/src/galn.cu b/src/galn.cu
-index 72903cf..4b07726 100644
+index 40e3319..717b20f 100644
 --- a/src/galn.cu
 +++ b/src/galn.cu
 @@ -86,6 +86,7 @@ static void galn_die(const char *fmt, ...)
@@ -117,7 +117,7 @@ index 72903cf..4b07726 100644
  };
  
  struct Shared {
-@@ -418,11 +426,14 @@ int galn_aln(int argc, char **argv)
+@@ -438,11 +446,14 @@ int galn_aln(int argc, char **argv)
      sai_gap_opt_t opt;
      const char *prefix = NULL, *fq = NULL, *outfn = NULL, *devspec = NULL;
      int cpu_workers = 0, il_n = 0, ngpus = 0, gpu_only = 0, cpu_only = 0, max_warps = 0, verify = 0, verbose = 0, alloc_mode = 0;
@@ -133,7 +133,7 @@ index 72903cf..4b07726 100644
      if (light_cap < 16) light_cap = 16;
  
      /* ---- GPUs: --device list, else the first --gpus, else every visible device ---- */
-@@ -530,6 +541,10 @@ int galn_aln(int argc, char **argv)
+@@ -550,6 +561,10 @@ int galn_aln(int argc, char **argv)
      fq_thread.join();
      if (!bwt) { if (reads) free_reads(reads, nreads); return 2; }
      if (!reads) { free(bwt); return 3; }
@@ -144,7 +144,7 @@ index 72903cf..4b07726 100644
      uint32_t cnt_table[256];
      bwtgap_gen_cnt_table(cnt_table);
      size_t bwt_bytes = (size_t)meta.bwt_size * sizeof(uint32_t);
-@@ -755,7 +770,8 @@ int galn_aln(int argc, char **argv)
+@@ -775,7 +790,8 @@ int galn_aln(int argc, char **argv)
      std::vector<std::thread> pool;
      std::vector<char> by_warp;
      std::vector<unsigned long long> warp_pops, warp_trace;
@@ -154,7 +154,7 @@ index 72903cf..4b07726 100644
  
      /* host arrays every GPU uploads (all reads, indexed by read number) */
      uint64_t total = 0;
-@@ -812,10 +828,33 @@ int galn_aln(int argc, char **argv)
+@@ -832,10 +848,33 @@ int galn_aln(int argc, char **argv)
              return avail;
          };
  
@@ -190,7 +190,7 @@ index 72903cf..4b07726 100644
              uint64_t wcap = std::min<uint64_t>(total + nreads, (uint64_t)maxl * (max_len + 1)) + 1;
              int acap = 32;
              int *d_idx, *d_heads, *d_naln; uint64_t *d_woff; bwtgap_width_t *d_w, *d_sw; bwtgap_aln_t *d_aln;
-@@ -838,10 +877,10 @@ int galn_aln(int argc, char **argv)
+@@ -858,10 +897,10 @@ int galn_aln(int argc, char **argv)
              std::vector<bwtgap_aln_t> r_aln((size_t)pl * acap);
              cudaEvent_t e0, e1;
              CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
@@ -204,7 +204,7 @@ index 72903cf..4b07726 100644
                  CUDA_CHECK(cudaMemcpyAsync(d_idx, h_idx.data(), (size_t)m * sizeof(int), cudaMemcpyHostToDevice, ks));
                  CUDA_CHECK(cudaMemcpyAsync(d_woff, h_woff.data(), (size_t)m * sizeof(uint64_t), cudaMemcpyHostToDevice, ks));
                  light_args a;
-@@ -1227,6 +1266,31 @@ int galn_aln(int argc, char **argv)
+@@ -1247,6 +1286,31 @@ int galn_aln(int argc, char **argv)
          verify_fail = bad? 6 : 0;
      }
  
@@ -236,7 +236,7 @@ index 72903cf..4b07726 100644
      /* ---- write .sai in input order ---- */
      sai_write_header(out, &opt);
      long mapped = 0, n_rec = 0;
-@@ -1250,6 +1314,9 @@ int galn_aln(int argc, char **argv)
+@@ -1270,6 +1334,9 @@ int galn_aln(int argc, char **argv)
      if (verbose) {
          for (auto &dp : S.devs) {
              DevState &D = *dp;
