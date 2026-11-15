@@ -1976,8 +1976,10 @@ rebased build, silence nvcc's #550-D "set but never used" warnings (the counting
 ## Phase 35 — strobealign-HRY (hybrid RY-mers) tested: not adopted
 
 Tolstoganov & Sahlin's aDNA mode for strobealign (bioRxiv 2026.11.05.764514) claims higher accuracy
-than `bwa aln -n 0.01 -o 2 -l 1024` at 4-6x its speed, on 40 bp reads at 0.5-5% divergence, with an
-overlap-based correctness rule and no MAPQ or reference-bias results. Run with the authors' settings
+than `bwa aln -n 0.01 -o 2 -l 1024` at 4-6x its speed, on 40 bp reads at 0.5-5% synthetic divergence
+(fruit fly, Zymo, and human CHM13), with an overlap-based correctness rule and no MAPQ or
+reference-bias results. Ours is human at real divergence (~0.1%), where their CHM13 0.5% win does
+not reproduce (HRY -0.69 points at 40-49 bp). Run with the authors' settings
 (`--adna --ry-len 8 -M 500 --ssw -k 17 -s 15`, tag `hry`) through our harness on the regenerated
 1.5 M-read set, and timed on the three real libraries. Full tables: BENCHMARK_ACCURACY.md.
 

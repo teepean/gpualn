@@ -462,10 +462,14 @@ Per length bin, accuracy % (MAPQ>=0 | MAPQ>=25):
 - **What the RY seeds do buy**: the shortest reads. At 20-29 bp HRY maps 73.6% correctly, against
   53.9% for default strobealign and 0% for mem; vs the paper's own non-aDNA baseline DK the gain is
   +1.1 points at 20-29 and +0.4 at 30-39, and DK is ahead from 40 bp on (overall 92.86 vs 92.74).
-- The paper's one non-win is also human: CHM13 at 2%, where bwa aln is 0.1 points ahead. Its
-  lowest divergence is 0.5%, about five times the SNV rate here, and its margins grow with
-  divergence -- a regime that matters for non-model and microbial references, not for human aDNA on
-  hs37d5.
+- The paper does test a human reference -- CHM13 is the T2T human assembly -- but with 0.5 / 2 / 5%
+  random substitutions and indels written into it, against ~0.1% here (one person's real SNVs vs
+  hs37d5, the divergence a human aDNA sample actually has). On CHM13 HRY wins at 0.5% and 5% and is
+  0.1 points behind bwa aln at 2%; its margins grow with divergence. At 40-49 bp we find HRY 0.69
+  points *behind*, which their 0.5% result does not predict. Not resolved without running their
+  pipeline; candidates are their correctness rule (overlap AND alignment score >= 60, rescored for
+  bwa), Mason's indels, their 20% bacterial background and T2T's repeats. The overlap part alone is
+  ruled out here (a 100 bp tolerance moves accuracy by 0.03 points).
 
 ## Reference bias (transversions, MAPQ>=25; perfect-mapper control +0.00039)
 
