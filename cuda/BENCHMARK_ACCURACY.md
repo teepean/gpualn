@@ -566,7 +566,9 @@ bottleneck.
   +0.01306.
 
 Every number behind this section (per-bin tables for all six strategies, MAPQ curves, hybrid curves,
-full bias and bootstrap output, run logs): `cuda/HRY_BENCHMARK_RESULTS.txt`.
+full bias and bootstrap output, run logs): `cuda/HRY_BENCHMARK_RESULTS.txt`, and the same as 38 tables
+in `cuda/HRY_BENCHMARK_RESULTS.odt` (regenerate: `cuda/tools/benchmark/hry_report_odt.py WORK SPEED
+out.fodt`, then `soffice --headless --convert-to odt out.fodt`).
 
 Reproduce: `cuda/tools/benchmark/hry_run.sh` (simulated set; scoring with `score_sam.py`,
 `mapq_curve.py`, `hybrid_curve.py`, `merge_hybrid.py`, `ref_bias.py --dump`, `bootstrap_bias.py`,
